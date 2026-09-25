@@ -1,16 +1,18 @@
 # this Makefile can handle on X86_64 and AArch64
 
-ARCH := $(shell uname -m)	# get architechure
-ifeq ($(ARCH), x86_64)	# if architechure is x86_64
-	CC = aarch64-linux-gnu-gcc
-	LD = aarch64-linux-gnu-ld
-	AS = aarch64-linux-gnu-as
-else ifeq ($(ARCH), aarch64)	# if architechure is AArch64
-	CC = gcc
-	LD = ld
-	AS = as
-else	# otherwise
-	$(error unsupported architechture: $(ARCH))
+# get architecture
+ARCH := $(shell uname -m)
+
+ifeq ($(ARCH),x86_64)
+CC := aarch64-linux-gnu-gcc
+LD := aarch64-linux-gnu-ld
+AS := aarch64-linux-gnu-as
+else ifeq ($(ARCH),aarch64)
+CC := gcc
+LD := ld
+AS := as
+else
+$(error unsupported architecture: $(ARCH))
 endif
 
 TARGET := out/privacy_router
@@ -23,22 +25,31 @@ OUT_DIR := out
 CFLAGS := -Wall -Wextra -Werror -I$(INC_DIR) -O3 -fno-pie
 ASFLAGS :=
 
-C_SRCS := $(wildcard $(SRC_DIR)/*.c)	# find all .c in SRC_DIR
-ASM_SRCS := $(wildcard $(ASM_DIR)/*.S)	# find all .S in ASM_DIR
+# find all .c files in src/
+C_SRCS := $(wildcard $(SRC_DIR)/*.c)
 
-C_OBJS := $(patsubst $(SRC_DIR)/%.c, $(OUT_DIR)/%.o, $(C_SRCS))	# keep name in .c to .o e.g. src/main.c -> out/main.o
-ASM_OBJS := $(patsubst $(ASM_DIR)/%.S, $(OUT_DIR)/%.o, $(ASM_SRCS))	# keep name in .S to .o e.g. asm/main.S -> out/main.o
+# find all .S files in asm/
+ASM_SRCS := $(wildcard $(ASM_DIR)/*.S)
+
+# src/main.c -> out/main.o
+C_OBJS := $(patsubst $(SRC_DIR)/%.c,$(OUT_DIR)/%.o,$(C_SRCS))
+
+# asm/function.S -> out/function.o
+ASM_OBJS := $(patsubst $(ASM_DIR)/%.S,$(OUT_DIR)/%.o,$(ASM_SRCS))
 
 OBJS := $(C_OBJS) $(ASM_OBJS)
 
-# finding library path
+# find C runtime files
 CRT1 := $(shell $(CC) -print-file-name=crt1.o)
 CRTI := $(shell $(CC) -print-file-name=crti.o)
 CRTN := $(shell $(CC) -print-file-name=crtn.o)
 CRTBEGIN := $(shell $(CC) -print-file-name=crtbegin.o)
 CRTEND := $(shell $(CC) -print-file-name=crtend.o)
+
+# find GCC runtime library
 LIBGCC := $(shell $(CC) -print-libgcc-file-name)
 
+# AArch64 dynamic linker
 DYNAMIC_LINKER := /lib/ld-linux-aarch64.so.1
 
 .PHONY: all compile run clean test
@@ -47,9 +58,9 @@ all: compile
 
 compile: $(TARGET)
 
-$(TARGET): $(OBJS)
+$(TARGET): $(OBJS) | $(OUT_DIR)
 	$(LD) \
-		-dynamic_linker $(DYNAMIC_LINKER) \
+		--dynamic-linker $(DYNAMIC_LINKER) \
 		-o $@ \
 		$(CRT1) \
 		$(CRTI) \

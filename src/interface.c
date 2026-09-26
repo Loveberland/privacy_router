@@ -75,5 +75,5 @@ int interface_set_ipv4(const char *ifname, const char *ip, const char *netmask) 
 	}
 
 	close(fd);	// close socket
-	return interface_set_up(ifname);	bring the interface up after successful configuration
+	return interface_set_up(ifname);	// bring the interface up after successful configuration
 }

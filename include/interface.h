@@ -1,3 +1,7 @@
+/*
+ * declares function for detecting and configuration network interface
+ */
+
 #ifndef INTERFACE_H
 #define INTERFACE_H
 

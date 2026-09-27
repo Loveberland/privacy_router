@@ -1,3 +1,7 @@
+/*
+ * declares funcion about AP(Access point)
+ */
+
 #ifndef AP_H
 #define AP_H
 

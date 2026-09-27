@@ -1,3 +1,8 @@
+/*
+ * open IPv4 forwarding
+ * create NAT
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

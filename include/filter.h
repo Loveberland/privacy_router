@@ -1,3 +1,7 @@
+/*
+ * declare function about blocklist
+ */
+
 #ifndef FILTER_H
 #define FILTER_H
 

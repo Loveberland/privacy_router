@@ -1,3 +1,7 @@
+/*
+ * declare function to run DHCP server
+ */
+
 #ifndef DHCP_H
 #define DHCP_H
 

@@ -1,3 +1,7 @@
+/*
+ * declares function for IPv4 forwarding and NAT
+ */
+
 #ifndef ROUTER_H
 #define ROUTER_H
 

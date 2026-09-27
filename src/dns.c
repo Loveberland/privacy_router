@@ -1,3 +1,8 @@
+/*
+ * DNS server / DNS proxy
+ * if domain doesn't in blocklist send to DNS upstream
+ */
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <stdint.h>

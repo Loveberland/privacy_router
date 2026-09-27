@@ -1,3 +1,7 @@
+/*
+ * manage network interface e.g. set IPv4, netmask
+ */
+
 #include <arpa/inet.h>	// IPv4 address conversation functions
 #include <errno.h>	
 #include <net/if.h>	// network interface definitions and functions

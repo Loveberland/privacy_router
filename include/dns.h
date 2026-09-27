@@ -1,3 +1,7 @@
+/*
+ * declare function for run DNS server
+ */
+
 #ifndef DNS_H
 #define DNS_H
 

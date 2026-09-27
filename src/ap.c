@@ -1,3 +1,8 @@
+/*
+ * changing network interface to AP mode
+ * set channel, turn on/off interface
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 

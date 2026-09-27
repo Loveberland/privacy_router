@@ -1,3 +1,7 @@
+/*
+ * load domain form blocklist.txt and store in hash table
+ */
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>

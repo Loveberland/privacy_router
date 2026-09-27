@@ -1,3 +1,7 @@
+/*
+ * DHCP server deal IP to each client
+ */
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <net/if.h>

@@ -59,7 +59,7 @@ int router_setup_nat(const char *wan_if, const char *lan_if) {
 		return (-1);
 	}
 
-	snprintf(cmd, sizoef(cmd), "nft add rule inet privacy_router forward iifname \"%s\" oifname \"%s\" ct state established, related accept", wan_if, lan_if);	// WAN -> LAN but not all packet (ESTABLISHED?, RELATED?)
+	snprintf(cmd, sizeof(cmd), "nft add rule inet privacy_router forward iifname \"%s\" oifname \"%s\" ct state established, related accept", wan_if, lan_if);	// WAN -> LAN but not all packet (ESTABLISHED?, RELATED?)
 	if (sh(cmd) < 0) {
 		return (-1);
 	}

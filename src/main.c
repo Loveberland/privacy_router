@@ -52,7 +52,7 @@ int main(int argc, char **argv) {
 
 	// checking permission (run root only)
 	if (geteuid() != 0) {
-		fprintf(stderr, "Run as root: sudo % [blocklist]\n", argv[0]);
+		fprintf(stderr, "Run as root: sudo %s [blocklist]\n", argv[0]);
 		return (1);
 	}
 
@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
 	}
 
 	log_info("privacy-router core running");
-	log_info("LAN %s = %s/24, WAN = %s", DEFAULT_WLAN_IFACE, DEFALT_AP_IP, DEFAULT_WAN_IFACE);
+	log_info("LAN %s = %s/24, WAN = %s", DEFAULT_WLAN_IFACE, DEFAULT_AP_IP, DEFAULT_WAN_IFACE);
 	log_info("press Ctrl+C to stop");
 
 	// if programm interrupt calling pause()

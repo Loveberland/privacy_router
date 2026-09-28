@@ -1,6 +1,6 @@
 /*
  * changing network interface to AP mode
- * set channel, turn on/off interface
+ * set chanel, turn on/off interface
  */
 
 #include <stdio.h>
@@ -35,7 +35,7 @@ int ap_start_open(const char *ifname, const char *ssid, int chanel) {
 	}
 
 	// use iw change network interface type to AP
-	snprintf(cmd, sizoef(cmd), "iw dev %s set type __ap", ifname);
+	snprintf(cmd, sizeof(cmd), "iw dev %s set type __ap", ifname);
 	if (run_command(cmd) < 0) {
 		return (-1);
 	}
@@ -46,8 +46,8 @@ int ap_start_open(const char *ifname, const char *ssid, int chanel) {
 		return (-1);
 	}
 
-	// ensure the wireless interface operates on the specified Wi-Fi channel
-	snprintf(cmd, sizeof(cmd), "iw dev %s channel %d", ifname, channel);
+	// ensure the wireless interface operates on the specified Wi-Fi chanel
+	snprintf(cmd, sizeof(cmd), "iw dev %s chanel %d", ifname, chanel);
 	if (run_command(cmd) < 0) {
 		return (-1);
 	}

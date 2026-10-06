@@ -1,10 +1,7 @@
-/*
- * Assembly AArch64
- * calculating hash of domain name with DJB2
- */
+/* AArch64 DJB2, identical to the unsigned-long C fallback */
 
 .text
-.align 2
+.p2align 2
 .globl domain_hash
 .type domain_hash, %function
 
@@ -13,12 +10,12 @@ domain_hash:
 1:
 	ldrb	w2, [x0], #1
 	cbz	w2, 2f
-	lsl	x3, x1, #5
-	add	x1, x3, x1
+	add	x1, x1, x1, lsl, #5
 	add	x1, x1, x2
 	b	1b
 2:
 	mov	x0, x1
 	ret
 
-.size	domain_hash, .-domain_hash
+.size domain_hash, .-domain_hash
+.section .note.GNU-stack,"",%progbits

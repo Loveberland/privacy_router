@@ -1,15 +1,7 @@
-<<<<<<< HEAD
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
-=======
-/*
- * changing network interface to AP mode
- * set chanel, turn on/off interface
- */
-
->>>>>>> master
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,35 +51,11 @@ int ap_is_running(void) {
 		return 1;
 	}
 
-<<<<<<< HEAD
 	if (rc == ap_pid || (rc < 0 && errno == ECHILD)) {
 		ap_pid = -1;
 	}
 
 	return 0;
-=======
-	// use iw change network interface type to AP
-	snprintf(cmd, sizeof(cmd), "iw dev %s set type __ap", ifname);
-	if (run_command(cmd) < 0) {
-		return (-1);
-	}
-
-	// set network interface up
-	snprintf(cmd, sizeof(cmd), "ip link set %s up", ifname);
-	if (run_command(cmd) < 0) {
-		return (-1);
-	}
-
-	// ensure the wireless interface operates on the specified Wi-Fi chanel
-	snprintf(cmd, sizeof(cmd), "iw dev %s chanel %d", ifname, chanel);
-	if (run_command(cmd) < 0) {
-		return (-1);
-	}
-
-	log_info("comfigured %s for AP mode (SSID requested: %s)", ifname, ssid);
-	log_info("beacon generation is intentionally left for the raw nl80211 stage");
-	return (0);
->>>>>>> master
 }
 
 int ap_stop(const char *ifname) {

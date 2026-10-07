@@ -158,12 +158,18 @@ int router_setup_nat(const char *wan_if, const char *lan_if) {
 		}
 	}
 
+<<<<<<< HEAD
 	unlink(path);
 
 	/* if founding some error */
 	if (saved_errno) {
 		errno = saved_errno;
 		return -1;
+=======
+	snprintf(cmd, sizeof(cmd), "nft add rule inet privacy_router forward iifname \"%s\" oifname \"%s\" ct state established, related accept", wan_if, lan_if);	// WAN -> LAN but not all packet (ESTABLISHED?, RELATED?)
+	if (sh(cmd) < 0) {
+		return (-1);
+>>>>>>> master
 	}
 
 	return 0;

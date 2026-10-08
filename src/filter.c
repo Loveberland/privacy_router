@@ -1,179 +1,317 @@
-/*
- * load domain form blocklist.txt and store in hash table
- */
-
-#include <ctype.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <arpa/inet.h>	/* provide networking-related definitions */
+#include <errno.h>	/* provide error constant */
+#include <stdint.h>	/* provide integer utilities */
+#include <stdio.h>	/* provide stdio */
+#include <stdlib.h>	/* provide stdlib */
+#include <string.h>	/* provide functions handle string */
 
 #include "filter.h"
-#include "common.h"
 
-#define TABLE_SIZE 1310710	// define hash table size
+/* represents one blocklisted of domain */
+typedef struct {
+	unsigned long hash;
+	char domain[];
+} domain_entry_t;
 
-typedef struct domain_node {
-	char *domain;
-	struct domain_node *next;
-} domain_node_t;	// linked list structure
+/* represents entire hash table */
+typedef struct {
+	domain_entry_t **slots;	/* stores pointer that point to each domain_entry_t */
+	size_t capacity;	/* total number of slots */
+	size_t count;	/* actual domains stores */
+} domain_table_t;
 
-static domain_node_t *table[TABLE_SIZE];	// create array of hash table
-static size_t entries;	// keep all domains count
+static domain_table_t table;
+static unsigned long hash_powers[254];	/* array store power of number 33 */
 
-#ifndef __aarch64__	// compile this C implementation when not on AArch64
-// compute and return the hash value of a domain
-unsigned long domain_hash(const char *domain) {
-	// DJB2 algorithm
-	unsigned long hash = 5381;	// initialize the DJB2 hash value
-	unsigned char c;	// store each character of the domain
-
-	while ((c = (unsigned char)*domain++) != 0) {
-		hash = ((hash << 5) + hash) + c;	// hash = (hash * 33) + character
-	}
-
-	return hash;
+/* whitespace checker */
+static int whitespace(unsigned char c) {
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
 }
-#endif
 
-// remove surrounding whitespace and convert domain to lowercase
-static void normalize(char *s) {
-	size_t len;
-	char *p = s;
-
-	while (*p && isspace((unsigned char)*p)) {	// skip leading whitespace
-		++p;
+/* transform domain to valid format */
+/* e.g. "  WWW.Example.COM. \n " -> "www.example.com" */
+static int normalize(const char *s, char out[254]) {
+	size_t len, label = 0;
+	if (!s) {
+		return -1;
 	}
 
-	if (p != s) {	// if leading whitespace was found
-		memmove(s, p, strlen(p) + 1);	// move the string left to remove leading whitespace
+	/* skip prefix whitespace */
+	while (whitespace((unsigned char)*s)) {
+		++s;
 	}
-
 	len = strlen(s);
-	while (len && isspace((unsigned char)s[len - 1])) {	// remove trailing whitespace
-		s[--len] = '\0';	// replace trailing whitespace with the null terminator
+
+	/* skip postfix whitespace */
+	while (len && whitespace((unsigned char)s[len - 1])) {
+		--len;
+	}
+	if (len && s[len - 1] == '.') {
+		--len;
+	}
+	if (len == 0 || len > 253) {
+		return -1;
 	}
 
-	for (p = s; *p; ++p) {	// convert all characters to lowercase
-		*p = (char)tolower((unsigned char)*p);
+	/* transfrom domain */
+	for (size_t i = 0; i < len; ++i) {
+		unsigned char c = (unsigned char)s[i];
+		if (c == '.') {
+			if (label == 0 || label > 63) {
+				return -1;
+			}
+
+			label = 0;
+		} else {
+			if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) {
+				return -1;
+			}
+
+			++label;
+		}
+
+		out[i] = (char)(c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c);
 	}
+
+	if (label ==  0 || label > 63) {
+		return -1;
+	}
+	out[len] = '\0';
+
+	return 0;
 }
 
-// add a domain to the hash table
-static int add_domain(const char *domain) {
-	unsigned long slot = domain_hash(domain) % TABLE_SIZE;	// compute the bucket index for this domain
-	domain_node_t *node = malloc(sizeof(*node));	// allocate memory for a new node
-	if (!node) {
-		return (-1);	// return an error if memory allocation fails
-	}
+/* convert a potential huge hash into valid array index */
+static size_t hash_slot(unsigned long hash, size_t capacity) {
+	hash ^= hash >> (sizeof(hash) * 4);
 
-	node->domain = strdup(domain);	// create a copy of domain
-	if (!node->domain) {	// handle strdup() allocation failure
-		free(node);
-		return (-1);
-	}
-
-	node->next = table[slot];	// link the new node to the current bucket head
-	table[slot] = node;	// set the new node as the bucket head
-	++entries;	// increase domain count
-	return (0);
+	return (size_t)hash & (capacity - 1);
 }
 
-// load blocklist from file
-int filter_load(const char *path) {
-	FILE *fp = fopen(path, "r");
-	char line[512];
-	if (!fp) {	// return an error if the file cannot be opened
-		return (-1);
+/* free hash table */
+static void table_free(domain_table_t *t) {
+	for (size_t i = 0; i < t->capacity; ++i) {
+		free(t->slots[i]);
+	}
+	free(t->slots);
+	memset(t, 0, sizeof(*t));
+}
+
+/* load blocklist file into table */
+static int table_grow(domain_table_t *t) {
+	size_t capacity = t->capacity ? t->capacity * 2 : 256;
+	/* overflow protection */
+	if (capacity < t->capacity || capacity > SIZE_MAX / sizeof(*t->slots)) {
+		errno = ENOMEM;
+		return -1;
 	}
 
-	while (fgets(line, sizeof(line), fp)) {	// read file line by line
-		char *domain = line;
-		normalize(domain);	// trim whitespace and convert to lowercase
-		if (!*domain || *domain == '#') {	// skip empty lines and comments
+	/* allocate new table and store previous data */
+	domain_entry_t **slots  = calloc(capacity, sizeof(*slots));
+	if (!slots) {
+		return -1;
+	}
+	for (size_t i = 0; i < t->capacity; ++i) {
+		domain_entry_t *entry = t->slots[i];
+		if (!entry) {
 			continue;
 		}
 
-		char *space = strpbrk(domain, " \t");	// find first space or tab
-		if (space) {	// if a space or tab was found
-			char *last = strrchr(domain, ' ');	// find last space
-			if (!last) {
-				last = strrchr(domain, '\t');	// find last tab
-			}
-
-			if (last) {	// if a separator was found
-				domain = last + 1;	// move the pointer past the separator
-				normalize(domain);	// format domain to normalize
-			}
+		size_t slot = hash_slot(entry->hash, capacity);
+		while (slots[slot]) {
+			slot = (slot + 1) & (capacity - 1);
 		}
 
-		if (*domain && add_domain(domain) < 0) {	// handle failure when adding the domain
-			fclose(fp);
-			return (-1);
-		}
+		slots[slot] = entry;
 	}
 
-	fclose(fp);
-	return (0);
+	/* free old slots array */
+	free(t->slots);
+	t->slots = slots;
+	t->capacity = capacity;
+
+	return 0;
 }
 
-// find exact domain in hash table
-static int exact_blocked(const char *domain) {
-	unsigned long slot = domain_hash(domain) % TABLE_SIZE;	// find same bucket used during insert
-	for (domain_node_t *n = table[slot]; n; n = n->next) {	// walk through linked list of that bucket
-		if (strcmp(n->domain, domain) == 0) {	// found in blocklist
-			return (1);
+/* add domain to table */
+static int add_domain(domain_table_t *t, const char *domain) {
+	unsigned long hash = domain_hash(domain);
+	if (!t->capacity && table_grow(t) < 0) {
+		return -1;
+	}
+
+	size_t slot = hash_slot(hash, t->capacity);
+	while (t->slots[slot]) {
+		if (t->slots[slot]->hash == hash && strcmp(t->slots[slot]->domain, domain) == 0) {
+			return 0;
+		}
+
+		slot = (slot + 1) & (t->capacity - 1);
+	}
+	if (t->count >= t->capacity - t->capacity / 4) {
+		if (table_grow(t) < 0) {
+			return -1;
+		}
+
+		slot = hash_slot(hash, t->capacity);
+		while (t->slots[slot]) {
+			slot = (slot + 1) & (t->capacity - 1);
 		}
 	}
 
-	return (0);	// not found in blocklist
+	/* store domain into table */
+	size_t len = strlen(domain) + 1;
+	domain_entry_t *entry = malloc(sizeof(*entry) + len);
+	if (!entry) {
+		return -1;
+	}
+	entry->hash = hash;
+	memcpy(entry->domain, domain, len);
+	t->slots[slot] = entry;
+	++t->count;
+	
+	return 0;
 }
 
-// check whether the domain should be blocked
-int filter_blocked(const char *domain) {
-	char copy[256];	// buffer for a copy of the domain
-	char *p;	// pointer used to walk through domain suffixes
-	if (strlen(domain) >= sizeof(copy)) {	// if domain is too long, terminate
-		return (0);
+/* load blocklist.txt to table */
+int filter_load(const char *path) {
+	domain_table_t next = {0};
+	char line[4096], normalized[254];
+	int saved_errno = 0;
+	if (!path) {
+		errno = EINVAL;
+		return -1;
 	}
 
-	strcpy(copy, domain);	// copy the domain into the local buffer
-	normalize(copy);	// normalize the copied domain
-
-	p = copy;	// point to the beginning of the copied domain
-	for (;;) {
-		if (exact_blocked(p)) {	// check the current domain or parent-domain suffix
-			return (1);
+	FILE *fp = fopen(path, "re");
+	if (!fp) {
+		return -1;
+	}
+	while (fgets(line, sizeof(line), fp)) {
+		/* finding newline if */
+		if (!strchr(line, '\n') && !feof(fp)) {
+			int c = fgetc(fp);
+			if (c != EOF) {
+				saved_errno = EINVAL;
+				break;
+			}
 		}
 
-		p = strchr(p, '.');	// find the next dot in the domain
-		if (!p) {	// stop when there are no more parent domains to check
+		/* finding '#' comment in blocklist.txt */
+		char *comment = strchr(line, '#');
+		if (comment) {
+			*comment = '\0';
+		}
+
+		char *state;
+		char *token = strtok_r(line, " \t\r\n\v\f", &state);	/* split string into token */
+		if (!token) {
+			continue;
+		}
+
+		struct in_addr ipv4;
+		struct in6_addr ipv6;
+		int hosts = inet_pton(AF_INET, token, &ipv4) == 1 || inet_pton(AF_INET6, token, &ipv6) == 1;
+		if (hosts) {
+			token = strtok_r(NULL, " \t\r\n\v\f", &state);	/* get domain */
+		}
+		if (!token) {
+			saved_errno = EINVAL;
 			break;
 		}
 
-		++p;	// skip dot
+		/* normalize domain and store into table */
+		do {
+			if (normalize(token, normalized) < 0) {
+				saved_errno = EINVAL;
+				break;
+			}
+			if (add_domain(&next, normalized) < 0) {
+				saved_errno = errno;
+				break;
+			}
+
+			token = strtok_r(NULL, " \t\r\n\v\f", &state);
+			if (token && !hosts) {
+				saved_errno = EINVAL;
+			}
+		} while (token && !saved_errno);
+		if (saved_errno) {
+			break;
+		}
 	}
 
-	return (0);
+	/* checking error */
+	if (ferror(fp) && !saved_errno) {
+		saved_errno = errno ? errno : EIO;
+	}
+	/* close file */
+	if (fclose(fp) == EOF && !saved_errno) {
+		saved_errno = errno;
+	}
+	if (saved_errno) {
+		table_free(&next);
+		errno = saved_errno;
+		return -1;
+	}
+	table_free(&table);	/* free previous data */
+	table = next;	/* store new data */
+	hash_powers[0] = 1;
+	/* generate power of 33 */
+	for (size_t i = 1; i < 254; ++i) {
+		hash_powers[i] = hash_powers[i - 1] * 33UL;
+	}
+
+	return 0;
 }
 
-// return the number of stored domains
-size_t filter_count(void) {
-	return entries;
-}
-
-// free all dynamically allocated domain nodes
-void filter_free(void) {
-	for (size_t i = 0; i < TABLE_SIZE; ++i) {	// walk through all buckets
-		domain_node_t *n = table[i];	// point to the first node in the bucket
-		while (n) {	// walk through linked list
-			domain_node_t *next = n->next;	// remember next node
-			free(n->domain);	// free string from strdup(domain)
-			free(n);	// free node
-			n = next;	// go to next node
+/* search hash table for exact domain */
+static int exact_blocked(const char *domain, unsigned long hash) {
+	size_t slot = hash_slot(hash, table.capacity);	/* find starting table position */
+	while (table.slots[slot]) {
+		domain_entry_t *entry = table.slots[slot];
+		/* found */
+		if (entry->hash == hash && strcmp(entry->domain, domain) == 0) {
+			return 1;
 		}
 
-		table[i] = NULL;	// mark the bucket as empty after freeing all nodes
+		slot = (slot + 1) & (table.capacity - 1);	/* try next position */
 	}
 
-	entries = 0;	// set count to zero
+	return 0;
+}
+
+/* check domain should be blocked? */
+int filter_blocked(const char *domain) {
+	char copy[254];
+	if (!table.count || normalize(domain, copy) < 0) {
+		return 0;
+	}
+
+	unsigned long hash = domain_hash(copy), prefix = 5381UL;
+	if (exact_blocked(copy, hash)) {
+		return 1;
+	}
+	size_t len = strlen(copy);
+
+	for (char *p = copy; *p; ++p) {
+		prefix = prefix * 33UL + (unsigned char)*p;
+		if (*p == '.') {
+			size_t remaining = len - (size_t)(p + 1 - copy);
+			unsigned long suffix_hash = hash - (prefix - 5381UL) * hash_powers[remaining];
+			if (exact_blocked(p + 1, suffix_hash)) {
+				return 1;
+			}
+		}
+	}
+
+	return 0;
+}
+
+size_t filter_count(void) {
+	return table.count;
+}
+
+void filter_free(void) {
+	table_free(&table);
 }

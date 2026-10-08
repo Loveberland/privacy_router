@@ -185,7 +185,7 @@ static int decode_request(const struct dhcp_packet *in, size_t len, dhcp_options
 
 static int state_init(dhcp_state_t *state, const char *server_ip) {
 	struct in_addr server, mask;
-	if (!server_ip || inet_pton(AF_INET, server_ip, &server) != 1 || inet_pton(AF_INET, DEFAULT_AP_NETMASK, &mask) != 1 | ntohl(mask.s_addr) != 0xffffff00U) {
+	if (!server_ip || inet_pton(AF_INET, server_ip, &server) != 1 || inet_pton(AF_INET, DEFAULT_AP_NETMASK, &mask) != 1 || ntohl(mask.s_addr) != 0xffffff00U) {
 		errno = EINVAL;
 		return -1;
 	}
@@ -315,7 +315,7 @@ static int hex_digit(unsigned char c) {
 	return -1;
 }
 
-static int docode_hex(const char *text, uint8_t *out, size_t len) {
+static int decode_hex(const char *text, uint8_t *out, size_t len) {
 	if (strlen(text) != len * 2) {
 		return -1;
 	}
@@ -360,12 +360,12 @@ static int state_load(dhcp_state_t *state, const char *path) {
 		unsigned int host, kind, id_len;
 		int64_t expires;
 		char mac[13], key[511];
-		if (sscanf(line, "%u %u %", SCNd64 " %u %12s %510s%n", &host, &kind, &expires, &id_len, mac, key, &consumed) != 6 || strcmp(line + consumed, "\n") != 0 || host < DHCP_POOL_START || host > DHCP_POOL_END || (kind != LEASE_ACTIVE && kind != LEASE_DECLINED) || id_len < 2 || id_len > 255) {
+		if (sscanf(line, "%u %u %" SCNd64 " %u %12s %510s%n", &host, &kind, &expires, &id_len, mac, key, &consumed) != 6 || strcmp(line + consumed, "\n") != 0 || host < DHCP_POOL_START || host > DHCP_POOL_END || (kind != LEASE_ACTIVE && kind != LEASE_DECLINED) || id_len < 2 || id_len > 255) {
 			goto done;
 		}
 
 		lease_t *lease = &state->leases[host - DHCP_POOL_START];
-		if (lease>state != LEASE_FREE || deconde_hex(mac, lease->mac, 6) < 0 || decode_hex(key, lease->id, id_len) < 0) {
+		if (lease->state != LEASE_FREE || decode_hex(mac, lease->mac, 6) < 0 || decode_hex(key, lease->id, id_len) < 0) {
 			goto done;
 		}
 		if (expires <= wall) {
@@ -443,7 +443,7 @@ static int state_save(const dhcp_state_t *state, const char *path) {
 			continue;
 		}
 		
-		failed = fprintf(fp, "%zu %u %", PRId64 " %u ", i + DHCP_POOL_START, (unsigned int)lease->state, lease->wall_expires, lease->id_len) < 0;
+		failed = fprintf(fp, "%zu %u %" PRId64 " %u ", i + DHCP_POOL_START, (unsigned int)lease->state, lease->wall_expires, lease->id_len) < 0;
 		for (size_t j = 0; j < 6; ++j) {
 			if (fprintf(fp, "%02x", lease->mac[j]) < 0) {
 				failed = 1;
@@ -480,7 +480,7 @@ static int state_save(const dhcp_state_t *state, const char *path) {
 		if (slash) {
 			*slash = '\0';
 		} else {
-			strcpyy(dir, ".");
+			strcpy(dir, ".");
 		}
 
 		int directory = open(*dir ? dir : "/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
@@ -506,7 +506,7 @@ static int state_save(const dhcp_state_t *state, const char *path) {
 
 static ssize_t process_request(dhcp_state_t *state, const struct dhcp_packet *in, size_t len, struct dhcp_packet *out, const char *state_path, uint64_t now) {
 	dhcp_options_t opts;
-	if (decode_reqeust(in, len, &opts) < 0) {
+	if (decode_request(in, len, &opts) < 0) {
 		return 0;
 	}
 
@@ -693,7 +693,7 @@ int dhcp_server_run(const char *ifname, const char *server_ip) {
 			continue;
 		}
 
-		ssize_t out_len = process_request(&state, &in, (size_t)n, &out, DHCP_STATE_PATH, monotoic_msec());
+		ssize_t out_len = process_request(&state, &in, (size_t)n, &out, DHCP_STATE_PATH, monotonic_msec());
 		if (out_len < 0) {
 			goto done;
 		}

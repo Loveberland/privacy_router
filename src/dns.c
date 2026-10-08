@@ -298,7 +298,7 @@ static int parse_query(const uint8_t *packet, size_t len, dns_query_t *query) {
 static size_t make_error(uint8_t *out, const dns_query_t *query, int rcode, int truncated) {
 	memset(out, 0, DNS_HEADER_SIZE);
 	write_u16(out, query->id);
-	out[2] = (uint8_t)(0x80 | (query->flags_hi & 0x79) | (truncate ? 0x02 : 0));
+	out[2] = (uint8_t)(0x80 | (query->flags_hi & 0x79) | (truncated ? 0x02 : 0));
 	out[3] = (uint8_t)(0x80 | (query->flags_lo & 0x10) | (rcode & 15));
 	size_t len = DNS_HEADER_SIZE;
 	if (query->question.name_len) {
@@ -665,9 +665,8 @@ static void handle_client(dns_context_t *ctx, int index, short events) {
 				return;
 			}
 
-			close_client(ctx, index) {
-				return;
-			}
+			close_client(ctx, index);
+			return;
 		}
 		if (!n) {
 			close_client(ctx, index);
@@ -707,7 +706,7 @@ static void handle_client(dns_context_t *ctx, int index, short events) {
 		}
 		if (client->stage == CLIENT_PREFIX) {
 			client->total = (size_t)read_u16(client->prefix) + 2;
-			if (client->total < DNS_HEADER_SIZE + 2 || reserve_buffer(client, client->total < 512 ? 512 : client->total) {
+			if (client->total < DNS_HEADER_SIZE + 2 || reserve_buffer(client, client->total < 512 ? 512 : client->total) < 0) {
 				close_client(ctx, index);
 				return;
 			}
@@ -720,8 +719,6 @@ static void handle_client(dns_context_t *ctx, int index, short events) {
 			return;
 		}
 	}
-
-	return fd;
 }
 
 static void accept_clients(dns_context_t *ctx) {
@@ -753,9 +750,25 @@ static void accept_clients(dns_context_t *ctx) {
 	}
 }
 
-static void receive_queries(dns_context_t *ctx) {
+static void recieve_queries(dns_context_t *ctx) {
+	uint8_t packet[DNS_MAX_PACKET];
+	for (int i = 0; i < 32; ++i) {
+		struct sockaddr_in address;
+		socklen_t size = sizeof(address);
+		ssize_t n = recvfrom(ctx->udp_fd, packet, sizeof(packet), MSG_TRUNC, (struct sockaddr *)&address, &size);
+
+		if (n < 0) {
+			return;
+		}
+		if ((size_t)n <= sizeof(packet)) {
+			handle_query(ctx, packet, (size_t)n, &address, -1);
+		}
+	}
+}
+
+int dns_server_run(const char *listen_ip, const char *upstream_ip) {
 	struct in_addr listen_address, upstream_address;
-	if (!listen_ip || !upstream_ip || inet_pton(AF_INET, listen_ip, &listen_a ddress) != 1 ||inet_pton(AF_INET, upstream_ip, &upstream_address) != 1 ||(listen_address.s_addr == upstream_address.s_addr && DNS_PORT == DNS_UPSTREAM_PORT)) {
+	if (!listen_ip || !upstream_ip || inet_pton(AF_INET, listen_ip, &listen_address) != 1 ||inet_pton(AF_INET, upstream_ip, &upstream_address) != 1 ||(listen_address.s_addr == upstream_address.s_addr && DNS_PORT == DNS_UPSTREAM_PORT)) {
 		errno = EINVAL;
 		return -1;
 	}
@@ -805,7 +818,7 @@ static void receive_queries(dns_context_t *ctx) {
 				continue;
 			}
 			if (job->deadline - now < (uint64_t) timeout) {
-				timeout = (int)job_error(job-deadline - now);
+				timeout = (int)(job->deadline - now);
 			}
 
 			pfds[count] = (struct pollfd){
@@ -866,7 +879,7 @@ static void receive_queries(dns_context_t *ctx) {
 							goto done; 
 						}
 						if (kinds[i] == 2) {
-							receive_queries(ctx);
+							recieve_queries(ctx);
 						} else {
 							accept_clients(ctx);
 						}

@@ -10,7 +10,7 @@ domain_hash:
 1:
 	ldrb	w2, [x0], #1
 	cbz	w2, 2f
-	add	x1, x1, x1, lsl, #5
+	add	x1, x1, x1, lsl #5
 	add	x1, x1, x2
 	b	1b
 2:

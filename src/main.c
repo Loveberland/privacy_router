@@ -15,6 +15,10 @@
 #include "interface.h"
 #include "router.h"
 
+#ifndef INSTANCE_LOCK_PATH
+#define INSTANCE_LOCK_PATH "/run/privacy_router.lock"
+#endif
+
 typedef struct {
 	int result;
 } worker_t;
@@ -30,6 +34,17 @@ static void *dhcp_thread(void *arg) {
 	return NULL;
 }
 
+static void *dns_thread(void *arg) {
+	worker_t *worker = arg;
+	worker->result = dns_server_run(DEFAULT_AP_IP, DHCP_UPSTREAM_IP);
+	if (worker->result < 0) {
+		log_error("DNS worker stopped: %s", strerror(errno));
+		service_request_stop();
+	}
+
+	return NULL;
+}
+
 static int wait_signal(const sigset_t *signals, long timeout_ns) {
 	struct timespec timeout = {
 		.tv_nsec = timeout_ns
@@ -38,7 +53,7 @@ static int wait_signal(const sigset_t *signals, long timeout_ns) {
 	if (rc == SIGINT || rc == SIGTERM) {
 		service_request_stop();
 	} else if (rc < 0 && errno != EAGAIN && errno != EINTR) {
-		return --1;
+		return -1;
 	}
 
 	return 0;
@@ -50,7 +65,7 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 	if (argc > 2) {
-		fprintf(stderr, "Usage: %s [blocklist]\n", agrv[0]);
+		fprintf(stderr, "Usage: %s [blocklist]\n", argv[0]);
 		return 1;
 	}
 	if (geteuid() != 0) {
@@ -58,7 +73,7 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
-	setvbuff(stdout, NULL, _IOLBF, 0);
+	setvbuf(stdout, NULL, _IOLBF, 0);
 	sigset_t signals;
 	sigemptyset(&signals);
 	sigaddset(&signals, SIGINT);
@@ -66,14 +81,14 @@ int main(int argc, char **argv) {
 
 	int rc = pthread_sigmask(SIG_BLOCK, &signals, NULL);
 	if (rc != 0) {
-		log_error("cannot block termination signals: %s", NULL
-		return 1;);
+		log_error("cannot block termination signals: %s", strerror(rc));
+		return 1;
 	}
 
 	service_reset();
-	int lock_fd = open(INSTANCE__LOCK_PATH, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+	int lock_fd = open(INSTANCE_LOCK_PATH, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
 	if (lock_fd < 0) {
-		log_error("cannot open instance lock: %s", strerror(error));
+		log_error("cannot open instance lock: %s", strerror(errno));
 		return 1;
 	}
 	if (flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
@@ -90,7 +105,7 @@ int main(int argc, char **argv) {
 	interface_config_t previous;
 	const char *blocklist =  argc == 2 ? argv[1] : "config/blocklist.txt";
 
-	if (!interface_exists(DEFAULT_WLAN_IFACE) || !interface_exists(DEFAULT_WAN_IFACE)) {
+	if (!interface_exist(DEFAULT_WLAN_IFACE) || !interface_exist(DEFAULT_WAN_IFACE)) {
 		log_error("interfaces %s and %s are required", DEFAULT_WLAN_IFACE, DEFAULT_WAN_IFACE);
 		goto cleanup;
 	}
@@ -181,7 +196,6 @@ int main(int argc, char **argv) {
 			log_error("cannot remove NAT rules: %s", strerror(errno));
 			result = 1;
 		}
-		}
 		if (router_restore_ipv4_forwarding() < 0) {
 			log_error("cannot restore forwarding: %s", strerror(errno));
 			result = 1;
@@ -193,6 +207,5 @@ int main(int argc, char **argv) {
 
 		filter_free();
 		close(lock_fd);
-		
 		return result;
 }

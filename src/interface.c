@@ -9,7 +9,7 @@
 #include "common.h"
 #include "interface.h"
 
-/* prepare Linux */
+/* ตรวจชื่อ interface และเตรียมคำขอส่งให้ Linux */
 static int request_init(struct ifreq *req, const char *ifname) {
 	if (!valid_ifname(ifname)) {
 		return -1;
@@ -21,7 +21,7 @@ static int request_init(struct ifreq *req, const char *ifname) {
 	return 0;
 }
 
-/* closing file descriptor without losing original */
+/* ปิด socket โดยเก็บ errno เดิมไว้ เพื่อไม่ให้ error หาย */
 static int close_error(int fd) {
 	int saved_errno = errno;
 	close(fd);
@@ -29,11 +29,12 @@ static int close_error(int fd) {
 	return -1;
 }
 
-/* checking exist interface */
+/* ตรวจว่ามี interface ชื่อนี้อยู่จริงมั้ย */
 int interface_exist(const char *ifname) {
 	return valid_ifname(ifname) && if_nametoindex(ifname) != 0;
 }
 
+/* เปิดใช้งาน interface โดยเก็บ flags อื่นไว้ */
 int interface_set_up(const char *ifname) {
 	struct ifreq req;
 	if (request_init(&req, ifname) < 0) {
@@ -59,6 +60,7 @@ int interface_set_up(const char *ifname) {
 	return 0;
 }
 
+/* ตั้งค่าที่อยู่ IP address ของ interface */
 static int set_address(int fd, const char *ifname, unsigned long operation, uint32_t address) {
 	struct ifreq req;
 	struct sockaddr_in addr = {.sin_family = AF_INET};	/* create IPv4 socket address structure */
@@ -72,7 +74,7 @@ static int set_address(int fd, const char *ifname, unsigned long operation, uint
 	return ioctl(fd, operation, &req);
 }
 
-/* save current interface before program modify it */
+/* บันทึกค่า interface ปัจจุบันไว้ เพื่อใช้คืนค่าmทีหลัง*/
 int interface_snapshot(const char *ifname, interface_config_t *config) {
 	struct ifreq req;
 	if (!config || request_init(&req, ifname) < 0) {
@@ -125,6 +127,7 @@ int interface_snapshot(const char *ifname, interface_config_t *config) {
 	return 0;
 }
 
+/* คืนค่าค่า interface ที่บันทึกไว้ */
 int interface_restore(const char *ifname, const interface_config_t *config) {
 	struct ifreq req;
 	if (!config || request_init(&req, ifname) < 0) {
@@ -166,6 +169,7 @@ int interface_restore(const char *ifname, const interface_config_t *config) {
 	return 0;
 }
 
+/* ตั้งค่าที่อยู่ IPv4 ของ interface หากขั้นตอนไหนล้มเหลว จะพยายามคืนค่าเดิม*/
 int interface_set_ipv4(const char *ifname, const char *ip, const char *netmask) {
 	struct in_addr address, mask;
 	if (!valid_ifname(ifname) || !ip || !netmask || inet_pton(AF_INET, ip, &address) != 1 || inet_pton(AF_INET, netmask, &mask) != 1) {

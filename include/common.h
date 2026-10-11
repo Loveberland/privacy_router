@@ -7,9 +7,9 @@
 #ifndef COMMON_H
 #define COMMON_H
 
-#include <stddef.h>	/* provide common fundamental types/marcos */
-#include <stdint.h>	/* provide integer types */
-#include <sys/types.h>	/* provide POSIX types */
+#include <stddef.h>    /* provide common fundamental types/marcos */
+#include <stdint.h>    /* provide integer types */
+#include <sys/types.h> /* provide POSIX types */
 
 /* default network configuration macros */
 #define DEFAULT_WLAN_IFACE "wlan0"
@@ -32,12 +32,12 @@
 #endif
 
 /* service bit flags */
-#define SERVICE_DHCP 1U	/* 00000001 */
+#define SERVICE_DHCP 1U /* 00000001 */
 #define SERVICE_DNS 2U	/* 00000010 */
 
 /* log handle functions */
-void log_info(const char *fmt, ...) __attribute__((format(printf, 1, 2)));	/* handle log info output */
-void log_error(const char *fmt, ...) __attribute__((format(printf, 1, 2)));	/* handle log error output */
+void log_info(const char *fmt, ...) __attribute__((format(printf, 1, 2)));  /* handle log info output */
+void log_error(const char *fmt, ...) __attribute__((format(printf, 1, 2))); /* handle log error output */
 
 /* service functions */
 void service_reset(void);

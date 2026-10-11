@@ -1,259 +1,325 @@
 # Privacy Router
 
-## About
+Privacy Router turns an AArch64 Linux device into an IPv4 Wi-Fi router with DHCP, DNS forwarding, domain blocking, and nftables NAT.
 
-**Privacy Router** is an experimental low-level networking project written mainly in C for Linux and Raspberry Pi/AArch64 systems.
+The project is experimental. The current access point is **open Wi-Fi with no password**; use it on an isolated test network.
 
-The project is designed to turn a Linux device into a privacy-focused router by providing basic networking features such as:
+## Device requirements
 
-- Wireless Access Point configuration
-- DHCP server
-- DNS server
-- Domain blocking using a blocklist
-- IPv4 forwarding
-- NAT using nftables
+- An AArch64 device running 64-bit Linux, such as a Raspberry Pi with Raspberry Pi OS 64-bit, Debian ARM64, or Ubuntu ARM64.
+- An Ethernet interface connected to an upstream network with internet access.
+- A Wi-Fi interface supporting AP mode through the Linux `nl80211` driver.
+- A phone, laptop, or another device to connect as a client.
+- Root access through `sudo`.
 
-By default, the project uses:
+Build and run inside AArch64 Linux. Check the architecture:
 
-```text
-LAN / Wi-Fi interface : wlan0
-WAN interface         : eth0
-Router IP             : 192.168.50.1
-Upstream DNS          : 1.1.1.1
-Blocklist             : config/blocklist.txt
+```bash
+uname -m
 ```
 
-The default network configuration can be changed in:
+The result must be `aarch64`. A 32-bit Raspberry Pi OS installation is not supported.
+
+The usual setup is:
 
 ```text
-include/common.h
+Internet / upstream router
+          |
+       Ethernet
+          |
+   Privacy Router
+          |
+     Wi-Fi clients
 ```
 
-> This project is currently under development.
+The Linux kernel must support IPv4 forwarding, connection tracking, and nftables NAT.
 
----
+## 1. Install required programs
 
-## Requirement
-
-### Operating System
-
-Linux is required because the project uses Linux networking features such as:
-
-```text
-/proc/sys/net/ipv4/ip_forward
-ip
-iw
-nftables
-```
-
-Recommended target system:
-
-```text
-Raspberry Pi OS 64-bit
-or another AArch64 Linux distribution
-```
-
-The Makefile supports:
-
-```text
-AArch64 Linux  -> Native compilation
-x86_64 Linux   -> Cross-compilation for AArch64
-```
-
-### Required Programs
-
-For an **AArch64 Linux / Raspberry Pi**:
+On Debian, Ubuntu, or Raspberry Pi OS:
 
 ```bash
 sudo apt update
-sudo apt install build-essential binutils make iw iproute2 nftables
+sudo apt install git build-essential hostapd iw iproute2 nftables
 ```
 
-For an **x86_64 Linux machine** used to cross-compile for AArch64:
+| Package | Purpose |
+|---|---|
+| `git` | Download the project |
+| `build-essential` | GCC, Make, and C development libraries |
+| `hostapd` | Run the Wi-Fi access point |
+| `iw` | Check Wi-Fi capabilities |
+| `iproute2` | Inspect interfaces, addresses, and routes |
+| `nftables` | Install NAT and forwarding rules |
+
+The program creates its own hostapd configuration and starts hostapd directly. You do not need to create `/etc/hostapd/hostapd.conf` or enable the hostapd system service.
+
+## 2. Prepare the network
+
+List your interfaces and check Wi-Fi capabilities:
 
 ```bash
-sudo apt update
-sudo apt install make gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+ip -br link
+iw list
 ```
 
-The Raspberry Pi or other target device also requires:
+Look for `AP` under `Supported interface modes` for the Wi-Fi adapter you will use.
+
+Connect the WAN Ethernet interface to your upstream router. Configure its address, default route, and DNS through your operating system's network manager, usually using DHCP.
+
+Check the addresses, routes, and name resolution:
 
 ```bash
-sudo apt install iw iproute2 nftables
+ip -4 address
+ip route
+getent ahostsv4 github.com
 ```
 
-The program requires **root privileges** because it modifies network interfaces, IPv4 forwarding, and nftables rules.
+WAN connectivity must work before starting Privacy Router. The program configures the LAN interface; it does not obtain a WAN address.
 
-A wireless adapter that supports **AP mode** is also required.
+Reserve the LAN Wi-Fi interface for Privacy Router. It should not be connected to another Wi-Fi network or managed by another access point service.
 
----
+If NetworkManager manages the LAN interface, release it before running:
 
-## How to Use
+```bash
+sudo nmcli device disconnect wlan0
+sudo nmcli device set wlan0 managed no
+```
 
-### 1. Clone the Repository
+Replace `wlan0` with your actual LAN interface. These commands apply only to NetworkManager; other network managers need equivalent configuration. Keep WAN management enabled.
+
+Check for existing DHCP and DNS servers:
+
+```bash
+sudo ss -lntup
+```
+
+Privacy Router needs:
+
+- UDP port 67 on the LAN interface for DHCP.
+- TCP and UDP port 53 at its LAN address for DNS.
+
+Reconfigure services whose bindings conflict. Stop any separate hostapd instance using the same Wi-Fi interface.
+
+## 3. Download and configure
 
 ```bash
 git clone https://github.com/Loveberland/privacy_router.git
 cd privacy_router
 ```
 
-### 2. Configure the Blocklist
+This setup uses the native AArch64-only Makefile.
 
-The default blocklist is:
+Edit `include/common.h` to match your device:
 
-```text
-config/blocklist.txt
+```c
+#define DEFAULT_WLAN_IFACE "wlan0"
+#define DEFAULT_WAN_IFACE "eth0"
+#define DEFAULT_AP_IP "192.168.50.1"
+#define DEFAULT_AP_NETMASK "255.255.255.0"
+#define DEFAULT_SSID "GodPiHole"
+#define DEFAULT_CHANNEL 6
+#define DHCP_POOL_START 10
+#define DHCP_POOL_END 20
+#define DHCP_LEASE_TIME 36000
+#define DHCP_UPSTREAM_IP "1.1.1.1"
 ```
 
-Add domains that you want the DNS server to block.
+With these defaults:
 
-Example:
+| Setting | Value |
+|---|---|
+| LAN interface | `wlan0` |
+| WAN interface | `eth0` |
+| Router address | `192.168.50.1/24` |
+| DHCP addresses | `192.168.50.10` through `192.168.50.20` |
+| Client gateway and DNS | `192.168.50.1` |
+| Lease duration | 10 hours |
+| Wi-Fi name | `GodPiHole` |
+| Upstream DNS | `1.1.1.1` |
+
+Use two distinct interfaces, with names matching `ip -br link`.
+
+The DHCP implementation requires a `/24` LAN (`255.255.255.0`). Choose a subnet that does not overlap WAN. Keep the router address outside the DHCP pool, with pool values between 1 and 254.
+
+Choose a Wi-Fi channel permitted in your region and supported by your adapter.
+
+Changes to `include/common.h` require rebuilding.
+
+## 4. Configure domain blocking
+
+Edit `config/blocklist.txt`. The file is initially empty, so no domains are blocked until you add entries.
+
+Use one domain per line:
 
 ```text
+# Domains to block
 example.com
 tracker.example.org
 ads.example.net
 ```
 
-Empty lines and lines beginning with `#` are ignored.
+Blank lines and `#` comments are ignored. Matching is case-insensitive.
 
----
+Blocking a domain also blocks its subdomains. For example, `example.com` blocks `www.example.com`.
 
-### 3. Compile
-
-Run:
-
-```bash
-make
-```
-
-or:
-
-```bash
-make compile
-```
-
-Both commands compile the project and create:
+Hosts-file entries are also supported:
 
 ```text
-out/privacy_router
+0.0.0.0 example.com
 ```
 
-The Makefile automatically detects the current architecture using:
+Use domain names rather than URLs or wildcard expressions.
+
+The blocklist loads at startup. Stop and restart the program after editing it; rebuilding is unnecessary.
+
+## 5. Build and run
+
+Compile on the AArch64 device:
 
 ```bash
-uname -m
+make -j4
 ```
 
-#### On AArch64
+The executable is created at `out/privacy_router`.
 
-The Makefile uses:
-
-```text
-gcc
-ld
-as
-```
-
-to compile the program natively.
-
-#### On x86_64
-
-The Makefile uses:
-
-```text
-aarch64-linux-gnu-gcc
-aarch64-linux-gnu-ld
-aarch64-linux-gnu-as
-```
-
-to cross-compile the project for AArch64.
-
-Therefore, the binary generated on an x86_64 computer is intended to run on an **AArch64 device**, such as a Raspberry Pi.
-
----
-
-### 4. Run
-
-On the AArch64 target device:
-
-```bash
-make run
-```
-
-The `run` target automatically compiles the program first and then executes:
+Run from the repository directory so the default blocklist path resolves correctly:
 
 ```bash
 sudo ./out/privacy_router
 ```
 
-Root privileges are required.
+Alternatively, compile and run together:
 
-To stop the router, press:
+```bash
+make run
+```
+
+Use a different blocklist:
+
+```bash
+sudo ./out/privacy_router /absolute/path/to/blocklist.txt
+```
+
+Display usage without root privileges:
+
+```bash
+./out/privacy_router --help
+```
+
+Wait for this log message:
 
 ```text
-Ctrl+C
+privacy-router running: LAN wlan0 = 192.168.50.1/24, WAN = eth0
 ```
 
----
+Keep the program running in the foreground. This setup does not install a boot service.
 
-### 5. Clean
+## 6. Connect and test a client
 
-Remove all compiled files:
+Connect your client to `GodPiHole`, or your configured SSID. Enable automatic IPv4 configuration through DHCP.
+
+With the defaults, the client should receive:
+
+- An address between `192.168.50.10` and `192.168.50.20`.
+- Subnet mask `255.255.255.0`.
+- Gateway and DNS server `192.168.50.1`.
+
+On a Debian/Ubuntu Linux client, install optional diagnostic tools:
 
 ```bash
-make clean
+sudo apt install dnsutils curl
 ```
 
-This removes:
-
-```text
-out/
-```
-
-To completely rebuild the project:
+Check addressing, connectivity, DNS, and internet access:
 
 ```bash
-make clean
-make compile
+ip -4 address
+ip route
+ping -c 3 192.168.50.1
+dig @192.168.50.1 github.com
+curl -I --connect-timeout 10 https://github.com
 ```
 
----
-
-### 6. Test
-
-Run:
+If `example.com` is in your blocklist:
 
 ```bash
-make test
+dig @192.168.50.1 example.com
 ```
 
-The `test` target currently does not contain any commands and is reserved for future tests.
+The response should contain `status: NXDOMAIN`.
 
----
+Filtering applies to DNS queries sent to this router. Clients using another DNS server or encrypted DNS can bypass the blocklist.
 
-### Makefile Commands
+## 7. Stop the router
 
-| Command | Description |
+Press **Ctrl+C** in the terminal running the program.
+
+On normal shutdown, the program attempts to:
+
+- Stop its hostapd process.
+- Remove its nftables table.
+- Restore the previous IPv4 forwarding setting.
+- Restore the LAN interface's saved IPv4 configuration and flags.
+
+Forced termination or power loss can prevent cleanup.
+
+If you released the Wi-Fi interface from NetworkManager, return it after stopping:
+
+```bash
+sudo nmcli device set wlan0 managed yes
+```
+
+## Make commands
+
+| Command | Action |
 |---|---|
-| `make` | Compile the project |
-| `make compile` | Compile the project |
-| `make run` | Compile and run the router using `sudo` |
-| `make clean` | Remove compiled files in `out/` |
-| `make test` | Test target, currently empty |
+| `make` or `make compile` | Build the router |
+| `make run` | Build and run using sudo |
+| `make test` | Build and execute existing test programs |
+| `make clean` | Remove the `out/` directory |
+| `make flex` | Count lines in tracked files |
 
----
+The current test programs are placeholders. They do not validate DHCP, DNS, filtering, or routing behavior.
 
-### Custom Blocklist
+## Testing in QEMU
 
-By default, the program uses:
+An AArch64 Linux guest under `qemu-system-aarch64` can build the program natively even when the host is x86_64. Install dependencies and run Make inside the guest.
 
-```text
-config/blocklist.txt
-```
+QEMU's virtual Ethernet adapters cannot provide the Wi-Fi access point required by the current startup code.
 
-After compiling, another blocklist can be specified manually:
+For Ethernet-only testing:
+
+1. Give the router guest a WAN adapter with internet access and a LAN adapter on an isolated virtual network.
+2. Connect a separate client VM to that LAN, with no other DHCP server.
+3. Set the interface names in `include/common.h`.
+4. Adapt `src/main.c` to skip `ap_start_open()`, the `ap_is_running()` check, and `ap_stop()`. Keep IPv4 forwarding and network cleanup.
+5. Rebuild, start the router, and perform the client checks above.
+
+There is currently no Ethernet-only command-line option.
+
+To test the existing Wi-Fi startup, pass through a USB Wi-Fi adapter supporting AP mode with a working guest driver.
+
+## Troubleshooting
+
+| Problem | Check |
+|---|---|
+| Build rejected | `uname -m` must report `aarch64` |
+| Interface missing | Match `include/common.h` to `ip -br link`, then rebuild |
+| AP fails to start | Check hostapd, AP support, radio blocks, channel, and competing Wi-Fi services |
+| DNS or DHCP cannot bind | Check conflicting bindings with `sudo ss -lntup` |
+| Client gets no address | Check client DHCP, LAN connectivity, and available leases |
+| Client has no internet | Check WAN addressing, default route, subnet overlap, and firewall rules |
+| Domain is not blocked | Check the blocklist, restart after edits, and verify client DNS settings |
+| Another instance is running | Stop the existing router process |
+
+While the router runs, inspect forwarding and its firewall rules:
 
 ```bash
-sudo ./out/privacy_router path/to/blocklist.txt
+cat /proc/sys/net/ipv4/ip_forward
+sudo nft list table inet privacy_router
 ```
+
+Forwarding should be `1`.
+
+Existing firewall rules must allow LAN DHCP and DNS traffic, LAN-to-WAN forwarding, and reply traffic. An accept rule in the program's table does not override a drop rule in another nftables base chain.

@@ -11,21 +11,22 @@
 
 /* ตรวจชื่อ interface และเตรียมคำขอส่งให้ Linux */
 static int request_init(struct ifreq *req, const char *ifname) {
+	// // ตรวจชื่อก่อนนเอาไปใส่ใน req
 	if (!valid_ifname(ifname)) {
 		return -1;
 	}
 
-	memset(req, 0, sizeof(*req));	/* set all req to zero */
-	memcpy(req->ifr_name, ifname, strlen(ifname) + 1);
+	memset(req, 0, sizeof(*req));	/*ล้างข้อมูลเก่า*/
+	memcpy(req->ifr_name, ifname, strlen(ifname) + 1); // ใส่ชื่อ interface
 
 	return 0;
 }
 
 /* ปิด socket โดยเก็บ errno เดิมไว้ เพื่อไม่ให้ error หาย */
 static int close_error(int fd) {
-	int saved_errno = errno;
+	int saved_errno = errno; // เก็บ error
 	close(fd);
-	errno = saved_errno;
+	errno = saved_errno; // คืน error เดิม
 	return -1;
 }
 
@@ -41,21 +42,23 @@ int interface_set_up(const char *ifname) {
 		return -1;
 	}
 
+	// สร้าง socket สำหรับส่งคำสั่ง
 	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);	/* create socket IPv4 UDP */
 	if (fd < 0) {
 		return -1;
 	}
 
+	// อ่านสถานะปัจจุบันของ interface
 	if (ioctl(fd, SIOCGIFFLAGS, &req) < 0) {
 		return close_error(fd);
 	}
 
-	req.ifr_flags |= IFF_UP;
+	req.ifr_flags |= IFF_UP; // เปิดสถานะ UP โดยไม่เปลี่ยน flags อื่น
 	if (ioctl(fd, SIOCSIFFLAGS, &req) < 0) {
 		return close_error(fd);
 	}
 
-	close(fd);
+	close(fd); 	// ปิด socket
 
 	return 0;
 }
@@ -68,8 +71,8 @@ static int set_address(int fd, const char *ifname, unsigned long operation, uint
 		return -1;
 	}
 
-	addr.sin_addr.s_addr = address;
-	memcpy(&req.ifr_addr, &addr, sizeof(addr));
+	addr.sin_addr.s_addr = address; // ใส่ค่าที่อยู่ที่ต้องการ
+	memcpy(&req.ifr_addr, &addr, sizeof(addr)); // เตรียมข้อมูลส่งให้ Linux
 	
 	return ioctl(fd, operation, &req);
 }
@@ -78,7 +81,7 @@ static int set_address(int fd, const char *ifname, unsigned long operation, uint
 int interface_snapshot(const char *ifname, interface_config_t *config) {
 	struct ifreq req;
 	if (!config || request_init(&req, ifname) < 0) {
-		errno = EINVAL;
+		errno = EINVAL; // บอกว่าข้อมูลที่ส่งมาไม่ถูกต้อง
 		return -1;
 	}
 
@@ -87,12 +90,14 @@ int interface_snapshot(const char *ifname, interface_config_t *config) {
 		return -1;
 	}
 
-	memset(config, 0, sizeof(*config));	/* clear entire snapshot strucuture */
+	memset(config, 0, sizeof(*config));	// ล้างพื้นที่เก็บ snapshot
 	if (ioctl(fd, SIOCGIFFLAGS, &req) < 0) {
 		return close_error(fd);
 	}
 
-	config->flags = req.ifr_flags;
+	config->flags = req.ifr_flags; // เก็บสถานะ interface
+
+	// อ่าน IP เดิม ถ้าไม่มี IP จะจบโดยถือว่าเป็นสถานะที่บันทึกได้
 	if (ioctl(fd, SIOCGIFADDR, &req) < 0) {
 		if (errno != EADDRNOTAVAIL) {
 			return close_error(fd);
@@ -105,21 +110,21 @@ int interface_snapshot(const char *ifname, interface_config_t *config) {
 
 	struct sockaddr_in addr;
 	memcpy(&addr, &req.ifr_addr, sizeof(addr));
-	config->address = addr.sin_addr.s_addr;
-	config->has_address = 1;
+	config->address = addr.sin_addr.s_addr; // เก็บ IP เดิม
+	config->has_address = 1; //  ใช้บอกว่าตอนบันทึกมี IP อยู่
 	if (ioctl(fd, SIOCGIFNETMASK, &req) < 0) {
 		return close_error(fd);
 	}
 
 	memcpy(&addr, &req.ifr_netmask, sizeof(addr));
-	config->netmask = addr.sin_addr.s_addr;
+	config->netmask = addr.sin_addr.s_addr; // เก็บ netmask เดิม
 	if (config->flags & IFF_BROADCAST) {
 		if (ioctl(fd, SIOCGIFBRDADDR, &req) < 0) {
 			return close_error(fd);
 		}
 
 		memcpy(&addr, &req.ifr_broadaddr, sizeof(addr));
-		config->broadcast = addr.sin_addr.s_addr;
+		config->broadcast = addr.sin_addr.s_addr; // เก็บ broadcast เดิม
 	}
 
 	close(fd);
@@ -140,11 +145,12 @@ int interface_restore(const char *ifname, const interface_config_t *config) {
 		return -1;
 	}
 
-	int saved_errno = 0;
+	int saved_errno = 0; // เก็บ error แรกที่เจอ
 	if (set_address(fd, ifname, SIOCSIFADDR, config->has_address ? config->address : 0) < 0) {
 		saved_errno = errno;
 	}
 
+	// คืน netmask และ broadcast เฉพาะที่มี IP
 	if (config->has_address) {
 		if (set_address(fd, ifname, SIOCSIFNETMASK, config->netmask) < 0 && !saved_errno) {
 			saved_errno = errno;
@@ -154,15 +160,14 @@ int interface_restore(const char *ifname, const interface_config_t *config) {
 		}
 	}
 
-	req.ifr_flags = config->flags;
+	req.ifr_flags = config->flags; // คืนสถานะ UP/DOWN และ flags เดิม
 	if (ioctl(fd, SIOCSIFFLAGS, &req) < 0 && !saved_errno) {
 		saved_errno = errno;
 	}
 
 	close(fd);
 	if (saved_errno) {
-		errno = saved_errno;
-		
+		errno = saved_errno; // ส่ง error แรกกลับ
 		return -1;
 	}
 
@@ -177,6 +182,7 @@ int interface_set_ipv4(const char *ifname, const char *ip, const char *netmask) 
 		return -1;
 	}
 
+	// เช็คว่า netmask มีบิต 1 ต่อเนื่องกัน และไม่ใช่ 0.0.0.0
 	uint32_t bits = ntohl(mask.s_addr);
 	uint32_t inverse = ~bits;
 	if (!bits || (inverse & (inverse + 1)) != 0) {
@@ -193,10 +199,13 @@ int interface_set_ipv4(const char *ifname, const char *ip, const char *netmask) 
 	if (fd < 0) {
 		return -1;
 	}
-
+	
+	// คำนวณ broadcast จาก IP และ netmask
 	uint32_t broadcast = address.s_addr | ~mask.s_addr;
+
+	// ตั้ง IP, netmask, broadcast
 	if (set_address(fd, ifname, SIOCSIFADDR, address.s_addr) < 0 || set_address(fd, ifname, SIOCSIFNETMASK, mask.s_addr) < 0 || set_address(fd, ifname, SIOCSIFBRDADDR, broadcast) < 0 || interface_set_up(ifname) < 0) {
-		int saved_errno = errno;
+		int saved_errno = errno; // เก็บ error ของขั้นตอนที่ fail
 		close(fd);
 		(void)interface_restore(ifname, &previous);
 		errno = saved_errno;

@@ -3,7 +3,7 @@
 #include <net/if.h>	/* provide network interface definition */
 #include <string.h>	/* provide handle string function */
 #include <sys/ioctl.h>	/* provide interface control request */
-#include <sys/socket.h>	/* provide socket manage functions */
+#include <sys/socket.h> /* provide socket manage functions */
 #include <unistd.h>	/* provide POSIX functions */
 
 #include "common.h"
@@ -38,7 +38,8 @@ int interface_exist(const char *ifname) {
 /* เปิดใช้งาน interface โดยเก็บ flags อื่นไว้ */
 int interface_set_up(const char *ifname) {
 	struct ifreq req;
-	if (request_init(&req, ifname) < 0) {
+	if (request_init(&req, ifname) < 0)
+	{
 		return -1;
 	}
 
@@ -66,8 +67,9 @@ int interface_set_up(const char *ifname) {
 /* ตั้งค่าที่อยู่ IP address ของ interface */
 static int set_address(int fd, const char *ifname, unsigned long operation, uint32_t address) {
 	struct ifreq req;
-	struct sockaddr_in addr = {.sin_family = AF_INET};	/* create IPv4 socket address structure */
-	if (request_init(&req, ifname) < 0) {
+	struct sockaddr_in addr = {.sin_family = AF_INET}; /* create IPv4 socket address structure */
+	if (request_init(&req, ifname) < 0)
+	{
 		return -1;
 	}
 
@@ -85,8 +87,9 @@ int interface_snapshot(const char *ifname, interface_config_t *config) {
 		return -1;
 	}
 
-	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);	/* create socket IPv4 UDP */
-	if (fd < 0) {
+	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); /* create socket IPv4 UDP */
+	if (fd < 0)
+	{
 		return -1;
 	}
 
@@ -135,13 +138,15 @@ int interface_snapshot(const char *ifname, interface_config_t *config) {
 /* คืนค่าค่า interface ที่บันทึกไว้ */
 int interface_restore(const char *ifname, const interface_config_t *config) {
 	struct ifreq req;
-	if (!config || request_init(&req, ifname) < 0) {
+	if (!config || request_init(&req, ifname) < 0)
+	{
 		errno = EINVAL;
 		return -1;
 	}
 
 	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-	if (fd < 0) {
+	if (fd < 0)
+	{
 		return -1;
 	}
 
@@ -155,7 +160,8 @@ int interface_restore(const char *ifname, const interface_config_t *config) {
 		if (set_address(fd, ifname, SIOCSIFNETMASK, config->netmask) < 0 && !saved_errno) {
 			saved_errno = errno;
 		}
-		if ((config->flags & IFF_BROADCAST) && set_address(fd, ifname, SIOCSIFBRDADDR, config->broadcast) < 0 && !saved_errno) {
+		if ((config->flags & IFF_BROADCAST) && set_address(fd, ifname, SIOCSIFBRDADDR, config->broadcast) < 0 && !saved_errno)
+		{
 			saved_errno = errno;
 		}
 	}
@@ -177,7 +183,8 @@ int interface_restore(const char *ifname, const interface_config_t *config) {
 /* ตั้งค่าที่อยู่ IPv4 ของ interface หากขั้นตอนไหนล้มเหลว จะพยายามคืนค่าเดิม*/
 int interface_set_ipv4(const char *ifname, const char *ip, const char *netmask) {
 	struct in_addr address, mask;
-	if (!valid_ifname(ifname) || !ip || !netmask || inet_pton(AF_INET, ip, &address) != 1 || inet_pton(AF_INET, netmask, &mask) != 1) {
+	if (!valid_ifname(ifname) || !ip || !netmask || inet_pton(AF_INET, ip, &address) != 1 || inet_pton(AF_INET, netmask, &mask) != 1)
+	{
 		errno = EINVAL;
 		return -1;
 	}
@@ -185,18 +192,21 @@ int interface_set_ipv4(const char *ifname, const char *ip, const char *netmask) 
 	// เช็คว่า netmask มีบิต 1 ต่อเนื่องกัน และไม่ใช่ 0.0.0.0
 	uint32_t bits = ntohl(mask.s_addr);
 	uint32_t inverse = ~bits;
-	if (!bits || (inverse & (inverse + 1)) != 0) {
+	if (!bits || (inverse & (inverse + 1)) != 0)
+	{
 		errno = EINVAL;
 		return -1;
 	}
 
 	interface_config_t previous;
-	if (interface_snapshot(ifname, &previous) < 0) {
+	if (interface_snapshot(ifname, &previous) < 0)
+	{
 		return -1;
 	}
 
 	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-	if (fd < 0) {
+	if (fd < 0)
+	{
 		return -1;
 	}
 	

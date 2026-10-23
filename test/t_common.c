@@ -1,3 +1,11 @@
+/**
+ * @file t_common.c
+ * @brief unit test of common.c
+ *
+ * include common.c and check interface name validation, service state set from threads,
+ * monotonic clock, logging that keep errno, and spawning and running external commands
+ */
+
 #include <assert.h>
 #include <errno.h>
 #include <pthread.h>
@@ -8,11 +16,24 @@
 
 #include "../src/common.c"
 
+/**
+ * @param[in] arg = service bit(s) to mark ready
+ *
+ * @return NULL
+ *
+ * thread body: mark the service ready
+ */
 static void *set_ready(void *arg) {
 	service_ready(*(unsigned int *)arg);
+
 	return NULL;
 }
 
+/**
+ * @return 0 if every check passes (a failed assert aborts)
+ *
+ * run the common.c tests
+ */
 int main(void) {
 	const char *bad[] = {NULL, "", ".", "..", "name with space", "bad/name", "bad\nname", "abcdefghijklmnop", "x;id"};
 	for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); ++i) {
@@ -65,5 +86,6 @@ int main(void) {
 	assert(pthread_sigmask(SIG_SETMASK, &old, NULL) == 0);
 	assert(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD);
 	puts("common tests passed");
+
 	return 0;
 }

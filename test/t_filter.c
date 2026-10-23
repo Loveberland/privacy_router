@@ -1,15 +1,29 @@
+/**
+ * @file t_filter.c
+ * @brief unit test of filter.c
+ *
+ * include filter.c with malloc() and calloc() replaced by versions that can fail, and check list parsing,
+ * suffix matching, domain length limits, allocation failures, domain_hash() and that a FIFO does not block
+ */
+
 #include <assert.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-static long fail_after = -1;
+static long fail_after = -1;	// allocations left before one fails, -1 to never fail
+
+/**
+ * @return 1 if this allocation should fail (errno set to ENOMEM), 0 otherwise
+ *
+ * count fail_after down and fail the allocation when it reach zero, only once
+ */
 static int allocation_fails(void) {
 	if (fail_after < 0) {
 		return 0;
@@ -18,37 +32,79 @@ static int allocation_fails(void) {
 		errno = ENOMEM;
 		return 1;
 	}
+
 	return 0;
 }
+
+/**
+ * @param[in] size = bytes to allocate
+ *
+ * @return memory from malloc(), NULL when allocation_fails()
+ *
+ * malloc() that can fail
+ */
 static void *test_malloc(size_t size) {
 	return allocation_fails() ? NULL : malloc(size);
 }
+
+/**
+ * @param[in] n = number of elements
+ * @param[in] size = size of an element
+ *
+ * @return memory from calloc(), NULL when allocation_fails()
+ *
+ * calloc() that can fail
+ */
 static void *test_calloc(size_t n, size_t size) {
 	return allocation_fails() ? NULL : calloc(n, size);
 }
+
+/**
+ * build filter.c with the allocators that can fail
+ */
 #define malloc test_malloc
 #define calloc test_calloc
 #include "../src/filter.c"
 #undef malloc
 #undef calloc
 
+/**
+ * @param[in] path = file to write
+ * @param[in] data = content
+ * @param[in] len = length of data
+ *
+ * replace the content of path with data
+ */
 static void put_file(const char *path, const void *data, size_t len) {
 	FILE *fp = fopen(path, "wb");
 	assert(fp && fwrite(data, 1, len, fp) == len && fclose(fp) == 0);
 }
 
+/**
+ * @param[in] s = string
+ *
+ * @return djb2 hash of s
+ *
+ * plain C hash to compare domain_hash() against
+ */
 static unsigned long reference_hash(const char *s) {
 	unsigned long hash = 5381UL;
 	while (*s) {
 		hash = hash * 33UL + (unsigned char)*s++;
 	}
+
 	return hash;
 }
 
 #if defined(__aarch64__)
-extern int hash_abi_check(const char *input, unsigned long expected);
+extern int hash_abi_check(const char *input, unsigned long expected);	// test/hash_abi.S, call domain_hash() and check result, stack and callee-saved registers
 #endif
 
+/**
+ * @return 0 if every check passes (a failed assert aborts)
+ *
+ * run the filter.c tests
+ */
 int main(void) {
 	char path[] = "/tmp/privacy-router-filter-XXXXXX";
 	int fd = mkstemp(path);
@@ -152,5 +208,6 @@ int main(void) {
 	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 	assert(unlink(path) == 0);
 	puts("filter tests passed");
+
 	return 0;
 }

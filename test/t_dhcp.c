@@ -1,4 +1,12 @@
-#define _GNU_SOURCE
+/**
+ * @file t_dhcp.c
+ * @brief unit test of dhcp.c
+ *
+ * include dhcp.c with lease directory ./dhcp and the socket calls, close(), fdopen() and mkostemp() replaced by fakes,
+ * then test leases, message parsing, the lease file and its errors, and the server loop, inside a temporary directory
+ */
+
+#define _GNU_SOURCE	// mkostemp()
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -27,6 +35,9 @@ static int fake_close(int fd);
 static FILE *fake_fdopen(int fd, const char *mode);
 static int tracked_mkostemp(char *path, int flags);
 
+/**
+ * build dhcp.c with lease directory ./dhcp and against the fakes below
+ */
 #define DHCP_STATE_DIR "dhcp"
 #define socket fake_socket
 #define setsockopt fake_setsockopt
@@ -48,23 +59,37 @@ static int tracked_mkostemp(char *path, int flags);
 #undef fdopen
 #undef mkostemp
 
-#define CHECK(expr)                                                    \
-	do {                                                               \
-		if (!(expr)) {                                                 \
-			fprintf(stderr, "%s:%d: %s\n", __func__, __LINE__, #expr); \
-			return 1;                                                  \
-		}                                                              \
+/**
+ * @param[in] expr = expression that must be true
+ *
+ * print function, line and expression, then return 1 from the test when expr is false
+ */
+#define CHECK(expr)									\
+	do {										\
+		if (!(expr)) {								\
+			fprintf(stderr, "%s:%d: %s\n", __func__, __LINE__, #expr);	\
+			return 1;							\
+		}									\
 	} while (0)
-#define TEST_SOCKET 1000000
 
-static int socket_failure, option_failure, bind_failure, poll_failure, receive_failure;
-static int option_count, socket_closes, network_step, sent_packets, send_failure;
-static struct dhcp_packet network_packet;
-static size_t network_packet_len;
-static int fdopen_failure, failed_stream_fd;
-static int tempfile_cloexec, tempfile_failure;
-static char tempfile_path[512];
+#define TEST_SOCKET 1000000	// descriptor returned by fake_socket()
 
+static int socket_failure, option_failure, bind_failure, poll_failure, receive_failure;	// 1 to fail socket(), setsockopt() call that fails, 1 to fail bind() or poll(), errno for recvfrom()
+static int option_count, socket_closes, network_step, sent_packets, send_failure;	// setsockopt() calls, TEST_SOCKET closes, poll() calls, packets sent, errno for sendto()
+static struct dhcp_packet network_packet;	// message returned by fake_recvfrom()
+static size_t network_packet_len;	// length of network_packet, 0 for none
+static int fdopen_failure, failed_stream_fd;	// 1 to make fdopen() fail, descriptor it was given
+static int tempfile_cloexec, tempfile_failure;	// 1 if the temporary file is close-on-exec, 1 to make mkostemp() fail
+static char tempfile_path[512];	// path of the last temporary file
+
+/**
+ * @param[in,out] path = template, the X are replaced by mkostemp()
+ * @param[in] flags = open flags
+ *
+ * @return file descriptor, or -1 with errno EMFILE when tempfile_failure is set
+ *
+ * mkostemp() that record the path and whether the file is close-on-exec
+ */
 static int tracked_mkostemp(char *path, int flags) {
 	if (tempfile_failure) {
 		errno = EMFILE;
@@ -76,9 +101,13 @@ static int tracked_mkostemp(char *path, int flags) {
 		tempfile_cloexec = (flags & O_CLOEXEC) && attributes >= 0 && (attributes & FD_CLOEXEC);
 		(void)snprintf(tempfile_path, sizeof(tempfile_path), "%s", path);
 	}
+
 	return fd;
 }
 
+/**
+ * clear the fake network state and the service state
+ */
 static void reset_network(void) {
 	socket_failure = option_failure = bind_failure = poll_failure = receive_failure = 0;
 	option_count = socket_closes = network_step = sent_packets = send_failure = 0;
@@ -86,6 +115,15 @@ static void reset_network(void) {
 	service_reset();
 }
 
+/**
+ * @param[in] domain = unused
+ * @param[in] type = unused
+ * @param[in] protocol = unused
+ *
+ * @return TEST_SOCKET, or -1 with errno EMFILE when socket_failure is set
+ *
+ * stand-in for socket()
+ */
 static int fake_socket(int domain, int type, int protocol) {
 	(void)domain;
 	(void)type;
@@ -94,9 +132,21 @@ static int fake_socket(int domain, int type, int protocol) {
 		errno = EMFILE;
 		return -1;
 	}
+
 	return TEST_SOCKET;
 }
 
+/**
+ * @param[in] fd = unused
+ * @param[in] level = unused
+ * @param[in] option = unused
+ * @param[in] value = unused
+ * @param[in] len = unused
+ *
+ * @return 0, or -1 with errno ENODEV on call number option_failure
+ *
+ * stand-in for setsockopt()
+ */
 static int fake_setsockopt(int fd, int level, int option, const void *value, socklen_t len) {
 	(void)fd;
 	(void)level;
@@ -107,9 +157,19 @@ static int fake_setsockopt(int fd, int level, int option, const void *value, soc
 		errno = ENODEV;
 		return -1;
 	}
+
 	return 0;
 }
 
+/**
+ * @param[in] fd = unused
+ * @param[in] address = unused
+ * @param[in] len = unused
+ *
+ * @return 0, or -1 with errno EADDRINUSE when bind_failure is set
+ *
+ * stand-in for bind()
+ */
 static int fake_bind(int fd, const struct sockaddr *address, socklen_t len) {
 	(void)fd;
 	(void)address;
@@ -118,9 +178,20 @@ static int fake_bind(int fd, const struct sockaddr *address, socklen_t len) {
 		errno = EADDRINUSE;
 		return -1;
 	}
+
 	return 0;
 }
 
+/**
+ * @param[in,out] fds = the server socket
+ * @param[in] count = unused
+ * @param[in] timeout = unused
+ *
+ * @return -1 with errno EIO when poll_failure is set, -1 with errno EINTR on the first call,
+ * 1 on the second call when a packet or receive failure is queued, otherwise 0 after requesting stop
+ *
+ * stand-in for poll() that drive one round of the server loop
+ */
 static int fake_poll(struct pollfd *fds, nfds_t count, int timeout) {
 	(void)count;
 	(void)timeout;
@@ -137,9 +208,22 @@ static int fake_poll(struct pollfd *fds, nfds_t count, int timeout) {
 		return 1;
 	}
 	service_request_stop();
+
 	return 0;
 }
 
+/**
+ * @param[in] fd = unused
+ * @param[out] buf = where to copy network_packet
+ * @param[in] len = size of buf
+ * @param[in] flags = unused
+ * @param[out] address = client address (port DHCP_CLIENT_PORT)
+ * @param[out] address_len = size of address
+ *
+ * @return length of network_packet (can be more than len), or -1 with errno receive_failure
+ *
+ * stand-in for recvfrom()
+ */
 static ssize_t fake_recvfrom(int fd, void *buf, size_t len, int flags, struct sockaddr *address, socklen_t *address_len) {
 	(void)fd;
 	(void)flags;
@@ -151,9 +235,22 @@ static ssize_t fake_recvfrom(int fd, void *buf, size_t len, int flags, struct so
 	memcpy(address, &client, sizeof(client));
 	*address_len = sizeof(client);
 	memcpy(buf, &network_packet, network_packet_len < len ? network_packet_len : len);
+
 	return (ssize_t)network_packet_len;
 }
 
+/**
+ * @param[in] fd = unused
+ * @param[in] buf = unused
+ * @param[in] len = length of the reply
+ * @param[in] flags = unused
+ * @param[in] address = unused
+ * @param[in] address_len = unused
+ *
+ * @return len, or -1 with errno send_failure (EINTR only once)
+ *
+ * stand-in for sendto(), count calls in sent_packets
+ */
 static ssize_t fake_sendto(int fd, const void *buf, size_t len, int flags, const struct sockaddr *address, socklen_t address_len) {
 	(void)fd;
 	(void)buf;
@@ -169,34 +266,69 @@ static ssize_t fake_sendto(int fd, const void *buf, size_t len, int flags, const
 		errno = error;
 		return -1;
 	}
+
 	return (ssize_t)len;
 }
 
+/**
+ * @param[in] fd = descriptor
+ * @param[in] mode = stream mode
+ *
+ * @return result of fdopen(), or NULL with errno EMFILE when fdopen_failure is set
+ *
+ * fdopen() that can fail, remember the descriptor it was given in failed_stream_fd
+ */
 static FILE *fake_fdopen(int fd, const char *mode) {
 	if (fdopen_failure) {
 		failed_stream_fd = fd;
 		errno = EMFILE;
 		return NULL;
 	}
+
 	return fdopen(fd, mode);
 }
 
+/**
+ * @param[in] fd = descriptor to close
+ *
+ * @return 0 for TEST_SOCKET, result of close() otherwise
+ *
+ * close() that count closes of TEST_SOCKET in socket_closes
+ */
 static int fake_close(int fd) {
 	if (fd == TEST_SOCKET) {
 		++socket_closes;
 		return 0;
 	}
+
 	return close(fd);
 }
 
+/**
+ * @param[in] text = IPv4 address in dotted form
+ *
+ * @return address in network byte order, abort() if text is not valid
+ *
+ * parse an IPv4 address
+ */
 static uint32_t ip(const char *text) {
 	struct in_addr addr;
 	if (inet_pton(AF_INET, text, &addr) != 1) {
 		abort();
 	}
+
 	return addr.s_addr;
 }
 
+/**
+ * @param[out] packet = message to build
+ * @param[in] type = DHCP message type
+ * @param[in] client = client number, used in the transaction ID and the MAC
+ *
+ * @return length of the message
+ *
+ * build a client message with only the message type option
+ */
 static size_t request(struct dhcp_packet *packet, uint8_t type, unsigned int client) {
 	memset(packet, 0, sizeof(*packet));
 	packet->op = 1;
@@ -210,21 +342,48 @@ static size_t request(struct dhcp_packet *packet, uint8_t type, unsigned int cli
 	packet->options[1] = 1;
 	packet->options[2] = type;
 	packet->options[3] = 255;
+
 	return 244;
 }
 
+/**
+ * @param[in,out] packet = message
+ * @param[in] len = length of message
+ * @param[in] code = option code
+ * @param[in] data = option value
+ * @param[in] size = length of data
+ *
+ * @return new length of message
+ *
+ * add an option before the end option
+ */
 static size_t append(struct dhcp_packet *packet, size_t len, uint8_t code, const void *data, uint8_t size) {
 	size_t pos = len - offsetof(struct dhcp_packet, options) - 1;
 	pos = add_option(packet->options, pos, code, data, size);
 	packet->options[pos++] = 255;
+
 	return offsetof(struct dhcp_packet, options) + pos;
 }
 
+/**
+ * @param[in] packet = server reply
+ * @param[in] len = length of reply
+ *
+ * @return message type of the reply, -1 if its options are malformed
+ *
+ * read the message type of a reply
+ */
 static int reply_type(const struct dhcp_packet *packet, size_t len) {
 	dhcp_options_t opts = {0};
+
 	return parse_options(packet->options, len - 240, &opts, 1) == 0 ? opts.type : -1;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check state_init() and address_index()
+ */
 static int test_initialization(void) {
 	dhcp_state_t state;
 	CHECK(state_init(&state, NULL) < 0 && errno == EINVAL);
@@ -239,9 +398,15 @@ static int test_initialization(void) {
 	CHECK(address_index(&state, ip("192.168.50.20")) == DHCP_POOL_SIZE - 1);
 	CHECK(address_index(&state, ip("192.168.51.10")) < 0);
 	CHECK(address_index(&state, ip("192.168.50.9")) < 0);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check expiry of offered and active leases
+ */
 static int test_lifetimes(void) {
 	dhcp_state_t state;
 	struct dhcp_packet in, out;
@@ -264,9 +429,15 @@ static int test_lifetimes(void) {
 	CHECK(state.leases[0].state == LEASE_ACTIVE);
 	expire_leases(&state, state.leases[0].expires);
 	CHECK(state.leases[0].state == LEASE_FREE);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check options read from the file and sname fields (option overload)
+ */
 static int test_overload(void) {
 	struct dhcp_packet in;
 	dhcp_options_t opts;
@@ -283,9 +454,15 @@ static int test_overload(void) {
 	CHECK(opts.id_len == sizeof(key) && memcmp(opts.id, key, sizeof(key)) == 0);
 	in.file[1] = 255;
 	CHECK(decode_request(&in, len, &opts) < 0);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check reply header, lease time and client identifier options, and NAK for an address held by another client
+ */
 static int test_reply_encoding(void) {
 	dhcp_state_t state;
 	struct dhcp_packet in, out;
@@ -320,9 +497,15 @@ static int test_reply_encoding(void) {
 	n = process_request(&state, &in, len, &out, NULL, 1001);
 	CHECK(n > 0 && reply_type(&out, (size_t)n) == DHCP_NAK);
 	CHECK(out.ciaddr == 0 && out.yiaddr == 0);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check decode_request() rejects truncated and malformed messages and accepts an unaligned buffer
+ */
 static int test_malformed_packets(void) {
 	struct dhcp_packet in;
 	dhcp_options_t opts;
@@ -366,9 +549,15 @@ static int test_malformed_packets(void) {
 	CHECK(decode_request(&in, sizeof(in), &opts) < 0);
 	in.options[sizeof(in.options) - 1] = 255;
 	CHECK(decode_request(&in, sizeof(in), &opts) == 0);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check a full pool, REQUEST for another server, and REQUEST while selecting, rebooting and renewing
+ */
 static int test_pool_and_requests(void) {
 	dhcp_state_t state;
 	struct dhcp_packet in, out;
@@ -403,9 +592,15 @@ static int test_pool_and_requests(void) {
 	CHECK(n > 0 && reply_type(&out, (size_t)n) == DHCP_ACK);
 	len = append(&in, len, 50, &wanted, 4);
 	CHECK(process_request(&state, &in, len, &out, NULL, 1004) == 0);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check DECLINE, INFORM and RELEASE
+ */
 static int test_decline_release_inform(void) {
 	dhcp_state_t state;
 	struct dhcp_packet in, out;
@@ -436,9 +631,15 @@ static int test_decline_release_inform(void) {
 	len = append(&in, len, 54, &state.server, 4);
 	CHECK(process_request(&state, &in, len, &out, NULL, 1004) == 0);
 	CHECK(state.leases[1].state == LEASE_FREE);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check leases survive state_save() and state_load(), declined leases are capped and expired leases dropped
+ */
 static int test_persistence(void) {
 	dhcp_state_t state, loaded;
 	struct dhcp_packet in;
@@ -465,18 +666,33 @@ static int test_persistence(void) {
 	CHECK(state_init(&loaded, DEFAULT_AP_IP) == 0 && state_load(&loaded, "leases") == 0);
 	CHECK(loaded.leases[0].state == LEASE_FREE);
 	CHECK(unlink("leases") == 0);
+
 	return 0;
 }
 
+/**
+ * @param[in] text = content of the lease file
+ *
+ * @return 0 on success, -1 on failure
+ *
+ * write text into ./leases
+ */
 static int write_text(const char *text) {
 	FILE *fp = fopen("leases", "w");
 	if (!fp) {
 		return -1;
 	}
 	int failed = fputs(text, fp) == EOF;
+
 	return fclose(fp) == 0 && !failed ? 0 : -1;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check state_load() rejects bad lease files, two leases of one client and a symlink,
+ * and state_save() reports a missing directory and a too long path
+ */
 static int test_bad_persistence(void) {
 	const char *bad[] = {"", "PRL2 c0a83201\n", "PRL1 c0a83301\n", "PRL1 c0a83201\n10 2 9223372036854775807 256 020000000001 ab\n", "PRL1 c0a83201\n10 2 9223372036854775807 7 020000000001 0102000000000z\n", "PRL1 c0a83201\n999999999999999999999999 2 9223372036854775807 7 020000000001 01020000000001\n", "PRL1 1c0a83201\n", "PRL1 c0a83201\n4294967306 2 9223372036854775807 7 020000000001 01020000000001\n", "PRL1 c0a83201\n10 2 99999999999999999999999999 7 020000000001 01020000000001\n", "PRL1 c0a83201\n10 2 9223372036854775807 4294967303 020000000001 01020000000001\n"};
 	dhcp_state_t state;
@@ -497,9 +713,15 @@ static int test_bad_persistence(void) {
 	memset(long_path, 'x', sizeof(long_path) - 1);
 	long_path[sizeof(long_path) - 1] = '\0';
 	CHECK(state_save(&state, long_path) < 0 && errno == ENAMETOOLONG);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check state_load() and state_save() close the descriptor when fdopen() fails
+ */
 static int test_file_failures(void) {
 	dhcp_state_t state;
 	CHECK(state_init(&state, DEFAULT_AP_IP) == 0);
@@ -511,9 +733,15 @@ static int test_file_failures(void) {
 	CHECK(fcntl(failed_stream_fd, F_GETFD) < 0 && errno == EBADF);
 	fdopen_failure = 0;
 	CHECK(unlink("leases") == 0);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check state_save() reports a mkostemp() failure and creates no lease file
+ */
 static int test_tempfile_failure(void) {
 	dhcp_state_t state;
 	CHECK(state_init(&state, DEFAULT_AP_IP) == 0);
@@ -522,9 +750,15 @@ static int test_tempfile_failure(void) {
 	tempfile_failure = 0;
 	CHECK(rc < 0 && saved_errno == EMFILE);
 	CHECK(access("leases", F_OK) < 0 && errno == ENOENT);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check the temporary lease file is close-on-exec and gone after the rename
+ */
 static int test_creation_cloexec(void) {
 	dhcp_state_t state;
 	CHECK(state_init(&state, DEFAULT_AP_IP) == 0);
@@ -533,9 +767,15 @@ static int test_creation_cloexec(void) {
 	CHECK(unlink("leases") == 0);
 	CHECK(tempfile_cloexec);
 	CHECK(access(tempfile_path, F_OK) < 0 && errno == ENOENT);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check state_load() does not block on a FIFO
+ */
 static int test_fifo_state(void) {
 	dhcp_state_t state;
 	CHECK(state_init(&state, DEFAULT_AP_IP) == 0);
@@ -550,9 +790,15 @@ static int test_fifo_state(void) {
 	CHECK(waitpid(child, &status, 0) == child);
 	CHECK(unlink("leases") == 0);
 	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
 	return 0;
 }
 
+/**
+ * @return number of entries in /proc/self/fd, -1 on failure
+ *
+ * count open file descriptors to find leaks
+ */
 static int fd_count(void) {
 	DIR *directory = opendir("/proc/self/fd");
 	if (!directory) {
@@ -562,9 +808,15 @@ static int fd_count(void) {
 	while (readdir(directory)) {
 		++count;
 	}
+
 	return closedir(directory) == 0 ? count : -1;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check dhcp_server_run() setup failures, receive errors, replies and send errors, and that it always closes its socket
+ */
 static int test_server_errors_and_cleanup(void) {
 	reset_network();
 	CHECK(dhcp_server_run(NULL, DEFAULT_AP_IP) < 0 && errno == EINVAL);
@@ -611,9 +863,15 @@ static int test_server_errors_and_cleanup(void) {
 	reset_network();
 	network_packet_len = sizeof(network_packet) + 1;
 	CHECK(dhcp_server_run("lo", DEFAULT_AP_IP) == 0 && sent_packets == 0 && socket_closes == 1);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * check dhcp_server_run() refuses a symlinked or world-writable lease directory
+ */
 static int test_state_directory(void) {
 	CHECK(rmdir("dhcp") == 0);
 	CHECK(mkdir("state-target", 0700) == 0 && symlink("state-target", "dhcp") == 0);
@@ -626,9 +884,15 @@ static int test_state_directory(void) {
 	rc = dhcp_server_run("lo", DEFAULT_AP_IP);
 	CHECK(chmod("dhcp", 0700) == 0);
 	CHECK(rc < 0 && socket_closes == 0);
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes, 1 at the first failed check
+ *
+ * feed 20000 randomly mutated messages to process_request()
+ */
 static int test_packet_mutations(void) {
 	uint32_t random = 0x53218a93U;
 	struct dhcp_packet in, out;
@@ -646,9 +910,15 @@ static int test_packet_mutations(void) {
 		}
 		CHECK(process_request(&state, &in, len, &out, NULL, i) >= 0);
 	}
+
 	return 0;
 }
 
+/**
+ * @return 0 if every test group passes, 1 otherwise
+ *
+ * run every test group inside a temporary directory and check no file descriptor leaks
+ */
 int main(void) {
 	char dir[] = "/tmp/privacy-router-dhcp-XXXXXX";
 	int cwd = open(".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -689,5 +959,6 @@ int main(void) {
 	if (failed) {
 		fprintf(stderr, "DHCP: %d test groups failed\n", failed);
 	}
+
 	return failed ? 1 : 0;
 }

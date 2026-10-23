@@ -1,3 +1,11 @@
+/**
+ * @file t_ap.c
+ * @brief unit test of ap.c
+ *
+ * include ap.c with command_spawn() replaced by fake_spawn(), which check the generated hostapd config
+ * and fork a mock hostapd that answer STATUS on the control socket
+ */
+
 #include <assert.h>
 #include <dirent.h>
 #include <errno.h>
@@ -13,16 +21,24 @@
 
 #include "common.h"
 
+/**
+ * build ap.c with command_spawn() replaced by fake_spawn()
+ */
 static int fake_spawn(char *const argv[], pid_t *pid);
 #define command_spawn fake_spawn
 #include "../src/ap.c"
 #undef command_spawn
 
-static int spawn_failure;
-static int child_exits;
-static char config_directory[64];
-static char expected_ssid[65];
+static int spawn_failure;	// 1 to make fake_spawn() fail with ENOENT
+static int child_exits;	// 1 to make the mock hostapd exit at once
+static char config_directory[64];	// ctrl_interface directory read from the generated config
+static char expected_ssid[65];	// ssid2 value (hex) the config must contain
 
+/**
+ * @return number of entries in /proc/self/fd
+ *
+ * count open file descriptors to find leaks
+ */
 static size_t descriptor_count(void) {
 	DIR *directory = opendir("/proc/self/fd");
 	assert(directory);
@@ -31,9 +47,19 @@ static size_t descriptor_count(void) {
 		++count;
 	}
 	assert(closedir(directory) == 0);
+
 	return count;
 }
 
+/**
+ * @param[in] argv = hostapd command line
+ * @param[out] pid = process ID of the mock hostapd
+ *
+ * @return 0 on success, -1 with errno ENOENT when spawn_failure is set
+ *
+ * stand-in for command_spawn(): check interface, control directory and ssid2 of the config,
+ * then fork a mock hostapd that answer STATUS with state=ENABLED (or exit at once when child_exits is set)
+ */
 static int fake_spawn(char *const argv[], pid_t *pid) {
 	assert(strcmp(argv[0], "hostapd") == 0);
 	FILE *fp = fopen(argv[1], "r");
@@ -85,9 +111,16 @@ static int fake_spawn(char *const argv[], pid_t *pid) {
 			}
 		}
 	}
+
 	return 0;
 }
 
+/**
+ * @return 0 if every check passes (a failed assert aborts)
+ *
+ * check argument validation, start and stop twice, spawn failure and hostapd exiting early,
+ * and that no child process or file descriptor is left behind
+ */
 int main(void) {
 	size_t original_descriptors = descriptor_count();
 	service_reset();
@@ -123,5 +156,6 @@ int main(void) {
 	assert(access(config_directory, F_OK) < 0 && errno == ENOENT);
 	assert(waitpid(-1, NULL, WNOHANG) < 0 && errno == ECHILD);
 	assert(descriptor_count() == original_descriptors);
+
 	return 0;
 }

@@ -1,3 +1,11 @@
+/**
+ * @file t_interface.c
+ * @brief unit test of interface.c
+ *
+ * include interface.c with socket(), close(), ioctl(), if_nametoindex(), getifaddrs() and freeifaddrs() replaced by mocks
+ * that simulate interface wlan0, and check snapshot, configure and restore, including a failure at every ioctl
+ */
+
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
@@ -12,6 +20,9 @@
 
 #include "common.h"
 
+/**
+ * build interface.c against the mocks below
+ */
 static int mock_socket(int domain, int type, int protocol);
 static int mock_close(int fd);
 static int mock_ioctl(int fd, unsigned long operation, ...);
@@ -32,15 +43,22 @@ static void mock_freeifaddrs(struct ifaddrs *addresses);
 #undef getifaddrs
 #undef freeifaddrs
 
-static int open_fds, socket_failure;
-static unsigned long fail_operation;
-static short device_flags;
-static int device_has_address;
-static uint32_t device_address, device_mask, device_broadcast, device_destination;
-static int address_count = 1, address_list_failure, address_lists;
-static struct ifaddrs addresses[2];
-static struct sockaddr_in address_entries[2];
+static int open_fds, socket_failure;	// fake sockets open, 1 to make mock_socket() fail
+static unsigned long fail_operation;	// ioctl request that fails once with EIO, 0 for none
+static short device_flags;	// flags of the simulated interface
+static int device_has_address;	// 1 if the simulated interface has an IPv4 address
+static uint32_t device_address, device_mask, device_broadcast, device_destination;	// IPv4 settings of the simulated interface
+static int address_count = 1, address_list_failure, address_lists;	// addresses reported, 1 to make mock_getifaddrs() fail, lists not freed yet
+static struct ifaddrs addresses[2];	// list returned by mock_getifaddrs()
+static struct sockaddr_in address_entries[2];	// addresses in that list
 
+/**
+ * @param[out] list = address list of wlan0 (and alias wlan0:1 when address_count is 2)
+ *
+ * @return 0 on success, -1 with errno ENOMEM when address_list_failure is set
+ *
+ * stand-in for getifaddrs()
+ */
 static int mock_getifaddrs(struct ifaddrs **list) {
 	if (address_list_failure) {
 		errno = ENOMEM;
@@ -55,14 +73,29 @@ static int mock_getifaddrs(struct ifaddrs **list) {
 	}
 	*list = address_count ? addresses : NULL;
 	++address_lists;
+
 	return 0;
 }
 
+/**
+ * @param[in] list = list from mock_getifaddrs()
+ *
+ * stand-in for freeifaddrs(), check the list is ours and count it as freed
+ */
 static void mock_freeifaddrs(struct ifaddrs *list) {
 	assert((list == NULL || list == addresses) && address_lists > 0);
 	--address_lists;
 }
 
+/**
+ * @param[in] domain = must be AF_INET
+ * @param[in] type = must be SOCK_DGRAM | SOCK_CLOEXEC
+ * @param[in] protocol = must be 0
+ *
+ * @return fake socket 42, or -1 with errno EMFILE when socket_failure is set
+ *
+ * stand-in for socket()
+ */
 static int mock_socket(int domain, int type, int protocol) {
 	assert(domain == AF_INET && type == (SOCK_DGRAM | SOCK_CLOEXEC) && protocol == 0);
 	if (socket_failure) {
@@ -70,23 +103,49 @@ static int mock_socket(int domain, int type, int protocol) {
 		return -1;
 	}
 	++open_fds;
+
 	return 42;
 }
 
+/**
+ * @param[in] fd = must be the fake socket
+ *
+ * @return 0
+ *
+ * stand-in for close()
+ */
 static int mock_close(int fd) {
 	assert(fd == 42 && open_fds > 0);
 	--open_fds;
+
 	return 0;
 }
 
+/**
+ * @param[in] name = interface name
+ *
+ * @return 1 for wlan0, 0 with errno ENODEV otherwise
+ *
+ * stand-in for if_nametoindex()
+ */
 static unsigned int mock_if_nametoindex(const char *name) {
 	if (name && strcmp(name, "wlan0") == 0) {
 		return 1;
 	}
 	errno = ENODEV;
+
 	return 0;
 }
 
+/**
+ * @param[in] fd = must be the fake socket
+ * @param[in] operation = SIOCGIF* or SIOCSIF* request
+ * @param[in,out] ... = struct ifreq for wlan0
+ *
+ * @return 0 on success, -1 with errno set (EIO for fail_operation, EADDRNOTAVAIL without address, EINVAL for broadcast without IFF_BROADCAST)
+ *
+ * stand-in for ioctl(): read and write the settings of the simulated interface
+ */
 static int mock_ioctl(int fd, unsigned long operation, ...) {
 	assert(fd == 42 && open_fds > 0);
 	va_list args;
@@ -150,9 +209,16 @@ static int mock_ioctl(int fd, unsigned long operation, ...) {
 		assert(0);
 	}
 	memcpy(&req->ifr_addr, &address, sizeof(address));
+
 	return 0;
 }
 
+/**
+ * @param[in] flags = interface flags
+ * @param[in] has_address = 1 to give the interface 10.0.0.2/24, 0 for no address
+ *
+ * check nothing leaked from the last case, then reset the simulated interface and the failure switches
+ */
 static void reset_device(short flags, int has_address) {
 	assert(open_fds == 0);
 	assert(address_lists == 0);
@@ -168,6 +234,11 @@ static void reset_device(short flags, int has_address) {
 	address_list_failure = 0;
 }
 
+/**
+ * @return 0 if every check passes (a failed assert aborts)
+ *
+ * run the interface.c tests
+ */
 int main(void) {
 	interface_config_t previous;
 	reset_device(IFF_BROADCAST, 1);
@@ -197,8 +268,7 @@ int main(void) {
 	address_list_failure = 1;
 	assert(interface_snapshot("wlan0", &previous) < 0 && errno == ENOMEM);
 	address_list_failure = 0;
-	const unsigned long failure_points[] = {SIOCGIFFLAGS, SIOCGIFADDR, SIOCGIFNETMASK, SIOCGIFBRDADDR,
-	                                        SIOCSIFADDR, SIOCSIFNETMASK, SIOCSIFBRDADDR, SIOCSIFFLAGS};
+	const unsigned long failure_points[] = {SIOCGIFFLAGS, SIOCGIFADDR, SIOCGIFNETMASK, SIOCGIFBRDADDR, SIOCSIFADDR, SIOCSIFNETMASK, SIOCSIFBRDADDR, SIOCSIFFLAGS};
 	for (size_t i = 0; i < sizeof(failure_points) / sizeof(failure_points[0]); ++i) {
 		reset_device(IFF_BROADCAST, 1);
 		fail_operation = failure_points[i];
@@ -223,5 +293,6 @@ int main(void) {
 	assert(interface_set_up("wlan0") < 0 && errno == EMFILE);
 	assert(interface_restore("wlan0", &previous) < 0 && errno == EMFILE);
 	assert(open_fds == 0);
+
 	return 0;
 }

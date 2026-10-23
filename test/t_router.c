@@ -1,4 +1,12 @@
-#define _GNU_SOURCE
+/**
+ * @file t_router.c
+ * @brief unit test of router.c
+ *
+ * include router.c with IP_FORWARD_PATH pointing to a temporary file and command_run(), close(), write() and mkostemp()
+ * replaced by versions that track and fail, and check forwarding save and restore, NAT setup and cleanup, and error paths
+ */
+
+#define _GNU_SOURCE	// mkostemp()
 
 #include <assert.h>
 #include <dirent.h>
@@ -12,7 +20,10 @@
 
 #include "common.h"
 
-static char forwarding_path[PATH_MAX];
+/**
+ * build router.c with IP_FORWARD_PATH set to forwarding_path and against the fakes below
+ */
+static char forwarding_path[PATH_MAX];	// temporary file used as IP_FORWARD_PATH
 static int fake_run(char *const argv[]);
 static int tracked_close(int fd);
 static ssize_t tracked_write(int fd, const void *buffer, size_t size);
@@ -28,11 +39,19 @@ static int tracked_mkostemp(char *path, int flags);
 #undef write
 #undef mkostemp
 
-static int command_calls, command_failure;
-static int close_calls, close_failure_call, write_failure, partial_write;
-static char configuration_path[PATH_MAX];
-static int tempfile_cloexec, tempfile_failure;
+static int command_calls, command_failure;	// calls to fake_run(), 1 to make it fail with EIO
+static int close_calls, close_failure_call, write_failure, partial_write;	// close() calls, close() call that fails, 1 to fail write(), 1 to write 1 byte only
+static char configuration_path[PATH_MAX];	// rules file given to nft -f
+static int tempfile_cloexec, tempfile_failure;	// 1 if the rules file is close-on-exec, 1 to make mkostemp() fail
 
+/**
+ * @param[in,out] path = template, the X are replaced by mkostemp()
+ * @param[in] flags = open flags
+ *
+ * @return file descriptor, or -1 with errno EMFILE when tempfile_failure is set
+ *
+ * mkostemp() that record whether the file is close-on-exec
+ */
 static int tracked_mkostemp(char *path, int flags) {
 	if (tempfile_failure) {
 		errno = EMFILE;
@@ -43,9 +62,15 @@ static int tracked_mkostemp(char *path, int flags) {
 		int attributes = fcntl(fd, F_GETFD);
 		tempfile_cloexec = (flags & O_CLOEXEC) && attributes >= 0 && (attributes & FD_CLOEXEC);
 	}
+
 	return fd;
 }
 
+/**
+ * @return number of entries in /proc/self/fd
+ *
+ * count open file descriptors to find leaks
+ */
 static size_t descriptor_count(void) {
 	DIR *directory = opendir("/proc/self/fd");
 	assert(directory);
@@ -54,18 +79,36 @@ static size_t descriptor_count(void) {
 		++count;
 	}
 	assert(closedir(directory) == 0);
+
 	return count;
 }
 
+/**
+ * @param[in] fd = descriptor to close
+ *
+ * @return result of close(), or -1 with errno EIO on call number close_failure_call (the descriptor is still closed)
+ *
+ * close() that count calls and can report a failure
+ */
 static int tracked_close(int fd) {
 	int rc = close(fd);
 	if (++close_calls == close_failure_call) {
 		errno = EIO;
 		return -1;
 	}
+
 	return rc;
 }
 
+/**
+ * @param[in] fd = descriptor
+ * @param[in] buffer = data
+ * @param[in] size = length of data
+ *
+ * @return result of write(), -1 with errno ENOSPC when write_failure is set, only 1 byte written when partial_write is set
+ *
+ * write() that can fail or write short
+ */
 static ssize_t tracked_write(int fd, const void *buffer, size_t size) {
 	if (write_failure) {
 		errno = ENOSPC;
@@ -75,9 +118,17 @@ static ssize_t tracked_write(int fd, const void *buffer, size_t size) {
 		assert(size > 1);
 		return write(fd, buffer, 1);
 	}
+
 	return write(fd, buffer, size);
 }
 
+/**
+ * @param[in] argv = nft command line
+ *
+ * @return 0, or -1 with errno EIO when command_failure is set
+ *
+ * stand-in for command_run(): check the rules file of nft -f, or the arguments of nft delete table
+ */
 static int fake_run(char *const argv[]) {
 	++command_calls;
 	assert(strcmp(argv[0], "nft") == 0);
@@ -105,20 +156,36 @@ static int fake_run(char *const argv[]) {
 		errno = EIO;
 		return -1;
 	}
+
 	return 0;
 }
 
+/**
+ * @param[in] text = content of the forwarding file
+ *
+ * write the forwarding file and clear the close and write failure switches
+ */
 static void set_forwarding(const char *text) {
 	FILE *fp = fopen(forwarding_path, "w");
 	assert(fp && fputs(text, fp) >= 0 && fclose(fp) == 0);
 	close_calls = close_failure_call = write_failure = partial_write = 0;
 }
 
+/**
+ * @param[in] expected = 0 or 1
+ *
+ * check the forwarding file starts with expected
+ */
 static void expect_forwarding(int expected) {
 	FILE *fp = fopen(forwarding_path, "r");
 	assert(fp && fgetc(fp) == '0' + expected && fclose(fp) == 0);
 }
 
+/**
+ * @return 0 if every check passes (a failed assert aborts)
+ *
+ * run the router.c tests
+ */
 int main(void) {
 	char directory[] = "/tmp/privacy-router-router-test-XXXXXX";
 	size_t original_descriptors = descriptor_count();
@@ -197,5 +264,6 @@ int main(void) {
 	assert(command_calls == calls);
 	assert(unlink(forwarding_path) == 0 && rmdir(directory) == 0);
 	assert(descriptor_count() == original_descriptors);
+
 	return 0;
 }

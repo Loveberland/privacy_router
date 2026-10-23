@@ -1,4 +1,13 @@
-#define _GNU_SOURCE
+/**
+ * @file t_dns.c
+ * @brief unit test of dns.c
+ *
+ * include dns.c on test ports with send(), sendto(), accept4(), realloc(), socket(), getifaddrs() and freeifaddrs()
+ * replaced by versions that can fail, test parsing, EDNS, answer checks, cleanup and filtering directly,
+ * then run the server against a fake upstream over UDP and TCP; give a test name to run only that test
+ */
+
+#define _GNU_SOURCE	// accept4()
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -14,21 +23,23 @@
 #include <time.h>
 #include <unistd.h>
 
-static int test_port = 19553, upstream_port = 19554;
-static int interrupt_send, interrupt_sendto, fail_realloc, fail_socket;
-static int fake_accept, accept_calls;
-static int fake_interfaces, fail_interfaces, freed_interfaces;
-static struct ifaddrs *interface_list;
+static int test_port = 19553, upstream_port = 19554;	// DNS_PORT and DNS_UPSTREAM_PORT of the server under test
+static int interrupt_send, interrupt_sendto, fail_realloc, fail_socket;	// 1 to make the next send(), sendto(), realloc() or socket() fail once
+static int fake_accept, accept_calls;	// 1 to make accept4() return /dev/null descriptors, number of such calls
+static int fake_interfaces, fail_interfaces, freed_interfaces;	// 1 to report interface_list, 1 to make getifaddrs() fail, lists freed
+static struct ifaddrs *interface_list;	// interface list reported when fake_interfaces is set
 
 static ssize_t dns_test_send(int fd, const void *data, size_t len, int flags);
-static ssize_t dns_test_sendto(int fd, const void *data, size_t len, int flags,
-                               const struct sockaddr *address, socklen_t size);
+static ssize_t dns_test_sendto(int fd, const void *data, size_t len, int flags, const struct sockaddr *address, socklen_t size);
 static int dns_test_accept4(int fd, struct sockaddr *address, socklen_t *size, int flags);
 static void *dns_test_realloc(void *data, size_t len);
 static int dns_test_socket(int domain, int type, int protocol);
 static int dns_test_getifaddrs(struct ifaddrs **addresses);
 static void dns_test_freeifaddrs(struct ifaddrs *addresses);
 
+/**
+ * build dns.c on the test ports, with a short upstream timeout and the replacements below
+ */
 #define DNS_PORT test_port
 #define DNS_UPSTREAM_PORT upstream_port
 #define DNS_TIMEOUT_MS 500U
@@ -48,33 +59,71 @@ static void dns_test_freeifaddrs(struct ifaddrs *addresses);
 #undef getifaddrs
 #undef freeifaddrs
 
-#define CHECK(condition)                                                                      \
-	do {                                                                                      \
-		if (!(condition)) {                                                                   \
-			fprintf(stderr, "%s:%d: %s (errno=%d)\n", __FILE__, __LINE__, #condition, errno); \
-			exit(1);                                                                          \
-		}                                                                                     \
+/**
+ * @param[in] condition = expression that must be true
+ *
+ * print file, line, condition and errno, then exit(1) when condition is false
+ */
+#define CHECK(condition)											\
+	do {													\
+		if (!(condition)) {										\
+			fprintf(stderr, "%s:%d: %s (errno=%d)\n", __FILE__, __LINE__, #condition, errno);	\
+			exit(1);										\
+		}												\
 	} while (0)
 
+/**
+ * @param[in] fd = socket
+ * @param[in] data = data to send
+ * @param[in] len = length of data
+ * @param[in] flags = send() flags
+ *
+ * @return result of send(), or -1 with errno EINTR once when interrupt_send is set
+ *
+ * send() that can be interrupted
+ */
 static ssize_t dns_test_send(int fd, const void *data, size_t len, int flags) {
 	if (interrupt_send) {
 		interrupt_send = 0;
 		errno = EINTR;
 		return -1;
 	}
+
 	return send(fd, data, len, flags);
 }
 
-static ssize_t dns_test_sendto(int fd, const void *data, size_t len, int flags,
-                               const struct sockaddr *address, socklen_t size) {
+/**
+ * @param[in] fd = socket
+ * @param[in] data = data to send
+ * @param[in] len = length of data
+ * @param[in] flags = sendto() flags
+ * @param[in] address = destination
+ * @param[in] size = size of address
+ *
+ * @return result of sendto(), or -1 with errno EINTR once when interrupt_sendto is set
+ *
+ * sendto() that can be interrupted
+ */
+static ssize_t dns_test_sendto(int fd, const void *data, size_t len, int flags, const struct sockaddr *address, socklen_t size) {
 	if (interrupt_sendto) {
 		interrupt_sendto = 0;
 		errno = EINTR;
 		return -1;
 	}
+
 	return sendto(fd, data, len, flags, address, size);
 }
 
+/**
+ * @param[in] fd = listening socket
+ * @param[out] address = peer address
+ * @param[in,out] size = size of address
+ * @param[in] flags = accept4() flags
+ *
+ * @return result of accept4(), or when fake_accept is set a /dev/null descriptor for the first 100 calls and then -1 with errno EAGAIN
+ *
+ * accept4() that can flood the server with connections
+ */
 static int dns_test_accept4(int fd, struct sockaddr *address, socklen_t *size, int flags) {
 	if (fake_accept) {
 		if (++accept_calls <= 100) {
@@ -83,27 +132,54 @@ static int dns_test_accept4(int fd, struct sockaddr *address, socklen_t *size, i
 		errno = EAGAIN;
 		return -1;
 	}
+
 	return accept4(fd, address, size, flags);
 }
 
+/**
+ * @param[in] data = memory to resize
+ * @param[in] len = new size
+ *
+ * @return result of realloc(), or NULL with errno ENOMEM once when fail_realloc is set
+ *
+ * realloc() that can fail
+ */
 static void *dns_test_realloc(void *data, size_t len) {
 	if (fail_realloc) {
 		fail_realloc = 0;
 		errno = ENOMEM;
 		return NULL;
 	}
+
 	return realloc(data, len);
 }
 
+/**
+ * @param[in] domain = address family
+ * @param[in] type = socket type and flags
+ * @param[in] protocol = protocol
+ *
+ * @return result of socket(), or -1 with errno EMFILE once when fail_socket is set
+ *
+ * socket() that can fail
+ */
 static int dns_test_socket(int domain, int type, int protocol) {
 	if (fail_socket) {
 		fail_socket = 0;
 		errno = EMFILE;
 		return -1;
 	}
+
 	return socket(domain, type, protocol);
 }
 
+/**
+ * @param[out] addresses = interface address list
+ *
+ * @return 0 on success, -1 on failure (errno set, ENOBUFS when fail_interfaces is set)
+ *
+ * getifaddrs() that can fail, or report interface_list when fake_interfaces is set
+ */
 static int dns_test_getifaddrs(struct ifaddrs **addresses) {
 	if (fail_interfaces) {
 		errno = ENOBUFS;
@@ -113,9 +189,15 @@ static int dns_test_getifaddrs(struct ifaddrs **addresses) {
 		*addresses = interface_list;
 		return 0;
 	}
+
 	return getifaddrs(addresses);
 }
 
+/**
+ * @param[in] addresses = list from dns_test_getifaddrs()
+ *
+ * freeifaddrs() that only count interface_list as freed
+ */
 static void dns_test_freeifaddrs(struct ifaddrs *addresses) {
 	if (fake_interfaces && addresses == interface_list) {
 		++freed_interfaces;
@@ -124,6 +206,14 @@ static void dns_test_freeifaddrs(struct ifaddrs *addresses) {
 	freeifaddrs(addresses);
 }
 
+/**
+ * @param[out] packet = buffer of at least 512 bytes
+ * @param[in] domain = dotted name
+ *
+ * @return length of the query
+ *
+ * build an A/IN query with ID 0x1234 and the RD bit set
+ */
 static size_t make_query(uint8_t *packet, const char *domain) {
 	memset(packet, 0, 512);
 	write_u16(packet, 0x1234);
@@ -145,9 +235,19 @@ static size_t make_query(uint8_t *packet, const char *domain) {
 	packet[pos++] = 0;
 	write_u16(packet + pos, 1);
 	write_u16(packet + pos + 2, 1);
+
 	return pos + 4;
 }
 
+/**
+ * @param[in,out] packet = query
+ * @param[in] pos = end of the query
+ * @param[in] version = EDNS version
+ *
+ * @return new end of the query
+ *
+ * add an OPT record (UDP size 1232, DO bit set) and count it in ARCOUNT
+ */
 static size_t add_opt(uint8_t *packet, size_t pos, uint8_t version) {
 	write_u16(packet + 10, (uint16_t)(read_u16(packet + 10) + 1));
 	packet[pos] = 0;
@@ -158,9 +258,15 @@ static size_t add_opt(uint8_t *packet, size_t pos, uint8_t version) {
 	packet[pos + 7] = 0x80;
 	packet[pos + 8] = 0;
 	write_u16(packet + pos + 9, 0);
+
 	return pos + 11;
 }
 
+/**
+ * @param[out] ctx = server state
+ *
+ * set up an empty server state like dns_server_run() does
+ */
 static void init_context(dns_context_t *ctx) {
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->udp_fd = ctx->tcp_fd = -1;
@@ -172,6 +278,11 @@ static void init_context(dns_context_t *ctx) {
 	}
 }
 
+/**
+ * @return number of open file descriptors
+ *
+ * count entries of /proc/self/fd that do not start with '.' to find leaks
+ */
 static int fd_count(void) {
 	DIR *directory = opendir("/proc/self/fd");
 	CHECK(directory);
@@ -183,9 +294,13 @@ static int fd_count(void) {
 		}
 	}
 	CHECK(closedir(directory) == 0);
+
 	return count;
 }
 
+/**
+ * check query parsing: name case, truncation, flags, opcode, counts, label and name limits, compression and EDNS
+ */
 static void parser_tests(void) {
 	uint8_t storage[1025], *packet = storage + 1;
 	dns_query_t query;
@@ -267,6 +382,9 @@ static void parser_tests(void) {
 	CHECK(parse_query(packet, len + 4, &query) == 1);
 }
 
+/**
+ * check that a second OPT record, a truncated EDNS option and a non-zero extended rcode are FORMERR
+ */
 static void edns_error_tests(void) {
 	uint8_t packet[512];
 	dns_query_t query;
@@ -286,6 +404,9 @@ static void edns_error_tests(void) {
 	CHECK(parse_query(packet, len, &query) == 1);
 }
 
+/**
+ * check upstream answer checks: ID, question, type, record lengths, compression and truncated answers
+ */
 static void response_tests(void) {
 	uint8_t packet[1024];
 	size_t len = make_query(packet, "example.com");
@@ -319,6 +440,9 @@ static void response_tests(void) {
 	CHECK(valid_response(packet, len, &job));
 }
 
+/**
+ * check that an answer of exactly DNS_MAX_PACKET bytes is accepted and a record that runs past the end is not
+ */
 static void maximum_packet_tests(void) {
 	uint8_t *packet = malloc(DNS_MAX_PACKET);
 	CHECK(packet);
@@ -341,6 +465,9 @@ static void maximum_packet_tests(void) {
 	free(packet);
 }
 
+/**
+ * feed 20000 randomly mutated queries to the parser and the error builder
+ */
 static void mutation_tests(void) {
 	uint8_t packet[1024], original[512];
 	size_t base = make_query(original, "www.example.com");
@@ -372,6 +499,9 @@ static void mutation_tests(void) {
 	}
 }
 
+/**
+ * check accept_clients() stops after 16 connections and closes them when every client slot is taken
+ */
 static void accept_budget_test(void) {
 	dns_context_t ctx;
 	init_context(&ctx);
@@ -387,6 +517,14 @@ static void accept_budget_test(void) {
 	CHECK(fd_count() == before);
 }
 
+/**
+ * @param[in] type = SOCK_DGRAM or SOCK_STREAM
+ * @param[in] port = port, 0 for any
+ *
+ * @return socket bound to 127.0.0.1, listening for SOCK_STREAM
+ *
+ * create a socket for the fake upstream or to reserve a port
+ */
 static int bound_socket(int type, uint16_t port) {
 	int fd = socket(AF_INET, type | SOCK_CLOEXEC, 0);
 	CHECK(fd >= 0);
@@ -396,21 +534,38 @@ static int bound_socket(int type, uint16_t port) {
 	if (type == SOCK_STREAM) {
 		CHECK(listen(fd, 16) == 0);
 	}
+
 	return fd;
 }
 
+/**
+ * @param[in] fd = bound socket
+ *
+ * @return local address of fd
+ *
+ * get the address and port a socket is bound to
+ */
 static struct sockaddr_in socket_address(int fd) {
 	struct sockaddr_in address;
 	socklen_t size = sizeof(address);
 	CHECK(getsockname(fd, (struct sockaddr *)&address, &size) == 0);
+
 	return address;
 }
 
+/**
+ * @param[in] fd = socket
+ *
+ * wait up to 3 seconds until fd is readable
+ */
 static void wait_readable(int fd) {
 	struct pollfd pfd = {.fd = fd, .events = POLLIN};
 	CHECK(poll(&pfd, 1, 3000) == 1 && (pfd.revents & POLLIN));
 }
 
+/**
+ * check that a UDP query and a UDP answer are sent again after EINTR
+ */
 static void send_interruption_test(void) {
 	dns_context_t ctx;
 	init_context(&ctx);
@@ -438,6 +593,10 @@ static void send_interruption_test(void) {
 	CHECK(close(upstream) == 0 && close(ctx.udp_fd) == 0);
 }
 
+/**
+ * check failed buffer growth, client cleanup, failed delivery and dns_server_run() argument, socket and bind errors,
+ * and that no file descriptor is left open
+ */
 static void cleanup_tests(void) {
 	dns_context_t ctx;
 	init_context(&ctx);
@@ -482,6 +641,9 @@ static void cleanup_tests(void) {
 	CHECK(close(blocker) == 0 && fd_count() == before);
 }
 
+/**
+ * check blocked names match without case, including subdomains and names with an unusual label
+ */
 static void filtering_tests(void) {
 	char path[] = "/tmp/privacy-router-dns-XXXXXX";
 	int fd = mkstemp(path);
@@ -501,6 +663,10 @@ static void filtering_tests(void) {
 	filter_free();
 }
 
+/**
+ * check dns_server_run() refuses an upstream that would send queries back to it (loopback, any, its own address,
+ * a local interface) and handles getifaddrs() failure
+ */
 static void upstream_validation_tests(void) {
 	int original_upstream_port = upstream_port;
 	upstream_port = test_port;
@@ -538,12 +704,27 @@ static void upstream_validation_tests(void) {
 	service_reset();
 }
 
+/**
+ * @param[out] arg = int that receive the result of dns_server_run()
+ *
+ * @return NULL
+ *
+ * thread body: run the server on 127.0.0.1 with upstream 127.0.0.1
+ */
 static void *run_server(void *arg) {
 	int *result = arg;
 	*result = dns_server_run("127.0.0.1", "127.0.0.1");
+
 	return NULL;
 }
 
+/**
+ * @param[in] fd = socket
+ * @param[out] buffer = where to store the data
+ * @param[in] len = bytes to read
+ *
+ * read exactly len bytes, waiting for each part
+ */
 static void read_exact(int fd, uint8_t *buffer, size_t len) {
 	while (len) {
 		wait_readable(fd);
@@ -554,6 +735,13 @@ static void read_exact(int fd, uint8_t *buffer, size_t len) {
 	}
 }
 
+/**
+ * @param[in] fd = socket
+ * @param[in] buffer = data
+ * @param[in] len = bytes to send
+ *
+ * send exactly len bytes
+ */
 static void send_exact(int fd, const uint8_t *buffer, size_t len) {
 	while (len) {
 		ssize_t size = send(fd, buffer, len, MSG_NOSIGNAL);
@@ -563,6 +751,10 @@ static void send_exact(int fd, const uint8_t *buffer, size_t len) {
 	}
 }
 
+/**
+ * run the server twice against a fake upstream: blocked and forwarded UDP queries, a spoofed answer, a truncated answer,
+ * an upstream timeout, and TCP queries and answers sent in pieces, one of them DNS_MAX_PACKET bytes
+ */
 static void integration_tests(void) {
 	int before = fd_count();
 	char path[] = "/tmp/privacy-router-dns-network-XXXXXX";
@@ -696,17 +888,25 @@ static void integration_tests(void) {
 	CHECK(fd_count() == before);
 }
 
+/**
+ * @param[in] argc = number of arguments
+ * @param[in] argv = optional test name
+ *
+ * @return 0 if every test passes (a failed check exits with 1)
+ *
+ * run every test, or only the one named by argv[1]
+ */
 int main(int argc, char **argv) {
 	struct test_case {
 		const char *name;
 		void (*run)(void);
-	} tests[] = {
-	    {"parser", parser_tests}, {"edns-errors", edns_error_tests}, {"response", response_tests}, {"maximum-packet", maximum_packet_tests}, {"mutations", mutation_tests}, {"accept-budget", accept_budget_test}, {"send-interruption", send_interruption_test}, {"cleanup", cleanup_tests}, {"filtering", filtering_tests}, {"upstream-validation", upstream_validation_tests}, {"integration", integration_tests}};
+	} tests[] = {{"parser", parser_tests}, {"edns-errors", edns_error_tests}, {"response", response_tests}, {"maximum-packet", maximum_packet_tests}, {"mutations", mutation_tests}, {"accept-budget", accept_budget_test}, {"send-interruption", send_interruption_test}, {"cleanup", cleanup_tests}, {"filtering", filtering_tests}, {"upstream-validation", upstream_validation_tests}, {"integration", integration_tests}};
 	for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
 		if (argc == 1 || strcmp(argv[1], tests[i].name) == 0) {
 			tests[i].run();
 			printf("DNS %s: ok\n", tests[i].name);
 		}
 	}
+
 	return 0;
 }

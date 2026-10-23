@@ -4,7 +4,7 @@
  *
  * routing module for GodPiHole
  * save and turn on IPv4 forwarding then write the saved value back,
- * install nftables rules that masquerade the wifi network behind the uplink and remove them again
+ * install nftables rules that masquerade the LAN behind the uplink and remove them again
  */
 
 #define _GNU_SOURCE	// mkostemp()
@@ -122,7 +122,7 @@ int router_restore_ipv4_forwarding(void) {
 
 /**
  * @param[in] wan_if = interface name of the internet uplink
- * @param[in] lan_if = interface name of the wifi network
+ * @param[in] lan_if = interface name of the LAN
  *
  * @return 0 on success, -1 on failure (errno set, EINVAL for bad names, EALREADY if the rules are installed)
  *

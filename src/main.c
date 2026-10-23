@@ -2,8 +2,8 @@
  * @file main.c
  * @brief entry point of GodPiHole
  *
- * take the single instance lock, configure the wifi interface and NAT, run DHCP and DNS servers in threads,
- * turn on forwarding and the access point, wait for SIGINT, SIGTERM or SIGHUP, then undo every step
+ * take the single instance lock, configure the LAN interface and NAT, run DHCP and DNS servers in threads,
+ * turn on forwarding (and the access point when enabled), wait for SIGINT, SIGTERM or SIGHUP, then undo every step
  */
 
 #include <errno.h>
@@ -39,11 +39,11 @@ typedef struct {
  *
  * @return NULL
  *
- * thread body: run DHCP server on the wifi interface, request stop of all services if it fails
+ * thread body: run DHCP server on the LAN interface, request stop of all services if it fails
  */
 static void *dhcp_thread(void *arg) {
 	worker_t *worker = arg;
-	worker->result = dhcp_server_run(DEFAULT_WLAN_IFACE, DEFAULT_AP_IP);
+	worker->result = dhcp_server_run(DEFAULT_LAN_IFACE, DEFAULT_AP_IP);
 	if (worker->result < 0) {
 		log_error("DHCP worker stopped: %s", strerror(errno));
 		service_request_stop();
@@ -150,8 +150,8 @@ int main(int argc, char **argv) {
 	interface_config_t previous;
 	const char *blocklist = argc == 2 ? argv[1] : "config/blocklist.txt";
 
-	if (strcmp(DEFAULT_WLAN_IFACE, DEFAULT_WAN_IFACE) == 0 || !interface_exist(DEFAULT_WLAN_IFACE) || !interface_exist(DEFAULT_WAN_IFACE)) {
-		log_error("interfaces %s and %s are required", DEFAULT_WLAN_IFACE, DEFAULT_WAN_IFACE);
+	if (strcmp(DEFAULT_LAN_IFACE, DEFAULT_WAN_IFACE) == 0 || !interface_exist(DEFAULT_LAN_IFACE) || !interface_exist(DEFAULT_WAN_IFACE)) {
+		log_error("interfaces %s and %s are required", DEFAULT_LAN_IFACE, DEFAULT_WAN_IFACE);
 		goto cleanup;
 	}
 	if (filter_load(blocklist) < 0) {
@@ -160,17 +160,17 @@ int main(int argc, char **argv) {
 	}
 
 	log_info("loaded %zu blocked domains", filter_count());
-	if (interface_snapshot(DEFAULT_WLAN_IFACE, &previous) < 0) {
-		log_error("cannot configure %s: %s", DEFAULT_WLAN_IFACE, strerror(errno));
+	if (interface_snapshot(DEFAULT_LAN_IFACE, &previous) < 0) {
+		log_error("cannot configure %s: %s", DEFAULT_LAN_IFACE, strerror(errno));
 		goto cleanup;
 	}
 
 	configured = 1;
-	if (interface_set_ipv4(DEFAULT_WLAN_IFACE, DEFAULT_AP_IP, DEFAULT_AP_NETMASK) < 0) {
-		log_error("cannot configure %s: %s", DEFAULT_WLAN_IFACE, strerror(errno));
+	if (interface_set_ipv4(DEFAULT_LAN_IFACE, DEFAULT_AP_IP, DEFAULT_AP_NETMASK) < 0) {
+		log_error("cannot configure %s: %s", DEFAULT_LAN_IFACE, strerror(errno));
 		goto cleanup;
 	}
-	if (router_setup_nat(DEFAULT_WAN_IFACE, DEFAULT_WLAN_IFACE) < 0) {
+	if (router_setup_nat(DEFAULT_WAN_IFACE, DEFAULT_LAN_IFACE) < 0) {
 		log_error("cannot install NAT rules: %s", strerror(errno));
 		goto cleanup;
 	}
@@ -213,7 +213,7 @@ int main(int argc, char **argv) {
 	if (service_stopping()) {
 		goto cleanup;
 	}
-	if (router_enable_ipv4_forwarding() < 0 || (DEFAULT_AP_ENABLED && ap_start_open(DEFAULT_WLAN_IFACE, DEFAULT_SSID, DEFAULT_CHANNEL) < 0)) {
+	if (router_enable_ipv4_forwarding() < 0 || (DEFAULT_AP_ENABLED && ap_start_open(DEFAULT_LAN_IFACE, DEFAULT_SSID, DEFAULT_CHANNEL) < 0)) {
 		int saved_errno = errno;
 		if (wait_signal(&signals, 0) > 0) {
 			result = 0;
@@ -224,7 +224,7 @@ int main(int argc, char **argv) {
 	}
 
 	result = 0;
-	log_info("privacy-router running: LAN %s = %s/24, WAN = %s", DEFAULT_WLAN_IFACE, DEFAULT_AP_IP, DEFAULT_WAN_IFACE);
+	log_info("privacy-router running: LAN %s = %s/24, WAN = %s", DEFAULT_LAN_IFACE, DEFAULT_AP_IP, DEFAULT_WAN_IFACE);
 	log_info("press Ctrl+C to stop");
 	while (!service_stopping()) {
 		if (wait_signal(&signals, 200000000) < 0) {
@@ -255,7 +255,7 @@ cleanup:
 			result = 1;
 		}
 	}
-	if (DEFAULT_AP_ENABLED && ap_stop(DEFAULT_WLAN_IFACE) < 0) {
+	if (DEFAULT_AP_ENABLED && ap_stop(DEFAULT_LAN_IFACE) < 0) {
 		log_error("cannot stop AP: %s", strerror(errno));
 		result = 1;
 	}
@@ -267,8 +267,8 @@ cleanup:
 		log_error("cannot restore forwarding: %s", strerror(errno));
 		result = 1;
 	}
-	if (configured && interface_restore(DEFAULT_WLAN_IFACE, &previous) < 0) {
-		log_error("cannot restore %s: %s", DEFAULT_WLAN_IFACE, strerror(errno));
+	if (configured && interface_restore(DEFAULT_LAN_IFACE, &previous) < 0) {
+		log_error("cannot restore %s: %s", DEFAULT_LAN_IFACE, strerror(errno));
 		result = 1;
 	}
 

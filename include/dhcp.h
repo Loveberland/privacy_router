@@ -1,6 +1,6 @@
 /**
  * @file dhcp.h
- * @brief DHCP server for the wifi network
+ * @brief DHCP server for the LAN
  *
  * declare function run DHCP server that lease addresses from the pool in common.h
  */

@@ -15,8 +15,8 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-#define DEFAULT_WLAN_IFACE "wlan0"       // wifi side
-#define DEFAULT_WAN_IFACE "eth0"       // internet uplink
+#define DEFAULT_LAN_IFACE "eth0"       // client side: wired LAN (the wifi interface when DEFAULT_AP_ENABLED)
+#define DEFAULT_WAN_IFACE "wlan0"       // internet uplink: wifi network joined by the OS
 #define DEFAULT_AP_IP "192.168.50.1"    // gateway
 #define DEFAULT_AP_NETMASK "255.255.255.0"      // subnet mask
 #ifndef DEFAULT_AP_ENABLED

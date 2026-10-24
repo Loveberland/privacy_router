@@ -40,7 +40,7 @@ OBJS := $(C_OBJS) $(ASM_OBJS)	# combine object files without test files
 TEST_PROJECT_OBJS := $(filter-out $(OUT_DIR)/src/main.o,$(OBJS))	# project objects linked into tests (all except main.o)
 DEPS := $(OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(TEST_ASM_OBJS:.o=.d)
 
-.PHONY: all compile run clean test sanitize flex	# all targets
+.PHONY: all compile run blocklist clean test sanitize flex	# all targets
 .SECONDARY: $(TEST_OBJS)
 
 all: compile
@@ -74,6 +74,10 @@ $(OUT_DIR)/test/%: $(OUT_DIR)/test/%.o $(TEST_PROJECT_OBJS) $(TEST_ASM_OBJS) Mak
 # run main program
 run: compile
 	sudo $(TARGET)
+
+# download the lists in config/blocklist-sources.txt into config/blocklist.txt
+blocklist:
+	sh scripts/update-blocklist.sh
 
 # run test programs
 test: $(TEST_BINS)

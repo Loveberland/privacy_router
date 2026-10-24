@@ -1,0 +1,20 @@
+# blocklists that scripts/update-blocklist.sh (make blocklist) merges into config/blocklist.txt
+# one URL per line, '#' starts a comment
+#
+# a list must have hosts lines (0.0.0.0 example.com) or one domain per line, adblock lists (||example.com^) do not work
+# the router blocks a listed domain and all its subdomains, so prefer lists made for that (wildcard formats):
+# a hosts list made for exact matching blocks much more here, StevenBlack (Pi-hole's default) has awstrack.me,
+# which would block every tracked link in emails sent through Amazon SES
+
+# HaGeZi Multi NORMAL: ads, trackers, telemetry, phishing and malware, rarely breaks a site
+https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/multi-onlydomains.txt
+
+# HaGeZi Threat Intelligence Feeds mini: malware, phishing, scam and command-and-control domains
+https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.mini-onlydomains.txt
+
+# OISD small: ads and trackers from another maintainer, "block, don't break"
+https://small.oisd.nl/domainswild2
+
+# HaGeZi Multi PRO blocks more (also error reporting such as sentry.io and app links such as branch.io),
+# use it instead of NORMAL:
+#https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt

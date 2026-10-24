@@ -272,6 +272,31 @@ static int read_line(FILE *fp, char line[4096]) {
 }
 
 /**
+ * @param[in] token = first word of a line
+ *
+ * @return 1 if token is an IPv4 or IPv6 address, 0 otherwise
+ *
+ * tell a hosts line from a domain line, accept an IPv6 zone such as fe80::1%lo0 (found in common hosts files)
+ */
+static int hosts_address(const char *token) {
+	struct in_addr ipv4;
+	struct in6_addr ipv6;
+	char address[INET6_ADDRSTRLEN];
+	size_t len = strcspn(token, "%");
+	if (inet_pton(AF_INET, token, &ipv4) == 1) {
+		return 1;
+	}
+	if (len >= sizeof(address) || (token[len] && !token[len + 1])) {
+		return 0;
+	}
+
+	memcpy(address, token, len);
+	address[len] = '\0';
+
+	return inet_pton(AF_INET6, address, &ipv6) == 1;
+}
+
+/**
  * @param[in] path = blocklist file
  *
  * @return 0 on success, -1 on failure (errno set, the active list is kept)
@@ -320,9 +345,7 @@ int filter_load(const char *path) {
 			continue;
 		}
 
-		struct in_addr ipv4;
-		struct in6_addr ipv6;
-		int hosts = inet_pton(AF_INET, token, &ipv4) == 1 || inet_pton(AF_INET6, token, &ipv6) == 1;
+		int hosts = hosts_address(token);
 		if (hosts) {
 			token = strtok_r(NULL, " \t\r\n\v\f", &state);
 		}

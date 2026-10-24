@@ -142,7 +142,8 @@ static int fake_run(char *const argv[]) {
 		assert(!ferror(fp) && feof(fp));
 		assert(fclose(fp) == 0);
 		rules[n] = '\0';
-		assert(strncmp(rules, "create table inet privacy_router\n", 33) == 0);
+		const char *start = "add table inet privacy_router\ndelete table inet privacy_router\nadd table inet privacy_router\n";
+		assert(strncmp(rules, start, strlen(start)) == 0);
 		assert(strstr(rules, "iifname \"wlan0\" oifname \"eth0\" meta nfproto ipv4 masquerade\n"));
 		assert(strstr(rules, "ct state { established, related } accept\n"));
 		assert(strstr(rules, "iifname \"wlan0\" drop\n"));

@@ -113,10 +113,10 @@ int main(void) {
 	assert(filter_load(NULL) == -1 && errno == EINVAL);
 	assert(filter_load("/privacy-router-missing-blocklist") == -1 && errno == ENOENT);
 	assert(filter_load(path) == 0 && filter_count() == 0);
-	const char list[] = "# comment\r\n\nExAmPle.COM. # inline\n0.0.0.0 tracker.test ads.test\n:: blocked.test alias.test\nexample.com\n_under.test";
+	const char list[] = "# comment\r\n\nExAmPle.COM. # inline\n0.0.0.0 tracker.test ads.test\n:: blocked.test alias.test\nfe80::1%lo0 scoped.test\nexample.com\n_under.test";
 	put_file(path, list, sizeof(list) - 1);
-	assert(filter_load(path) == 0 && filter_count() == 6);
-	const char *blocked[] = {"example.com", " \tWWW.EXAMPLE.COM.\n", "a.b.example.com", "ads.test", "a.alias.test", "_under.test"};
+	assert(filter_load(path) == 0 && filter_count() == 7);
+	const char *blocked[] = {"example.com", " \tWWW.EXAMPLE.COM.\n", "a.b.example.com", "ads.test", "a.alias.test", "_under.test", "a.scoped.test"};
 	for (size_t i = 0; i < sizeof(blocked) / sizeof(*blocked); ++i) {
 		assert(filter_blocked(blocked[i]));
 	}
@@ -128,12 +128,12 @@ int main(void) {
 	const char binary[] = "example.com\0ignored\n";
 	put_file(path, binary, sizeof(binary) - 1);
 	assert(filter_load(path) == -1 && errno == EINVAL);
-	assert(filter_count() == 6 && filter_blocked("example.com"));
-	const char *invalid[] = {"http://example.com\n", "a..b\n", "0.0.0.0\n", "a.test b.test\n", ".\n", "*.example.com\n", "a!b\n"};
+	assert(filter_count() == 7 && filter_blocked("example.com"));
+	const char *invalid[] = {"http://example.com\n", "a..b\n", "0.0.0.0\n", "a.test b.test\n", ".\n", "*.example.com\n", "a!b\n", "fe80::1% x.test\n", "1.2.3.4%eth0 x.test\n", "%lo0 x.test\n"};
 	for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); ++i) {
 		put_file(path, invalid[i], strlen(invalid[i]));
 		assert(filter_load(path) == -1 && errno == EINVAL);
-		assert(filter_count() == 6 && filter_blocked("example.com"));
+		assert(filter_count() == 7 && filter_blocked("example.com"));
 	}
 	char maximum[255];
 	size_t pos = 0;

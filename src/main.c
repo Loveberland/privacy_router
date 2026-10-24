@@ -97,7 +97,7 @@ static int wait_signal(const sigset_t *signals, long timeout_ns) {
  *
  * @return 0 on clean shutdown, 1 on failure, 11 if another instance holds the lock
  *
- * check arguments and root, block stop signals, take the instance lock, load blocklist, configure interface and NAT,
+ * check arguments and root, ignore SIGPIPE, block stop signals, take the instance lock, load blocklist, configure interface and NAT,
  * start DHCP and DNS threads and wait until both are ready, turn on forwarding (and the access point),
  * run until a stop signal, then stop threads and restore everything
  */
@@ -116,6 +116,7 @@ int main(int argc, char **argv) {
 	}
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
+	signal(SIGPIPE, SIG_IGN);	// a log reader that goes away must not kill the router before it cleans up
 	sigset_t signals;
 	sigemptyset(&signals);
 	sigaddset(&signals, SIGINT);

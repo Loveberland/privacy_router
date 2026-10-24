@@ -126,7 +126,7 @@ int router_restore_ipv4_forwarding(void) {
  *
  * @return 0 on success, -1 on failure (errno set, EINVAL for bad names, EALREADY if the rules are installed)
  *
- * write table inet privacy_router to a temporary file and load it with nft -f:
+ * write table inet privacy_router to a temporary file and load it with nft -f, replacing a table left by a killed run:
  * masquerade IPv4 from lan_if out of wan_if, let only replies back in, drop other forwarded lan_if traffic
  */
 int router_setup_nat(const char *wan_if, const char *lan_if) {
@@ -156,7 +156,9 @@ int router_setup_nat(const char *wan_if, const char *lan_if) {
 	}
 
 	int rc = fprintf(fp,
-			"create table inet privacy_router\n"
+			"add table inet privacy_router\n"
+			"delete table inet privacy_router\n"
+			"add table inet privacy_router\n"
 			"add chain inet privacy_router forward { type filter hook forward priority 0; policy accept; }\n"
 			"add chain inet privacy_router postrouting { type nat hook postrouting priority 100; }\n"
 			"add rule inet privacy_router forward iifname \"%s\" oifname \"%s\" meta nfproto ipv4 ct state { new, established, related } accept\n"
